@@ -1,0 +1,37 @@
+# 憑證 / 設定（絕對不能上傳）
+service_account.json
+gsheet_config.json
+gs_config.json
+*.json
+
+# 個資相關
+推薦備份/
+temp_resumes/
+resume_library/
+
+# 文件
+*.docx
+*.pptx
+*.pdf
+
+# 本機工具（不需要在 dashboard 上）
+app.py
+sync_to_gsheet.py
+adverse_impact_audit.py
+parse_104_email.py
+
+# GAS 腳本
+*.gs
+
+# 暫存檔
+jobs_list.txt
+test_email.txt
+extracted_text.txt
+last_session_results.json
+email_log.json
+_prd_text.txt
+
+# Python
+__pycache__/
+*.pyc
+.env
