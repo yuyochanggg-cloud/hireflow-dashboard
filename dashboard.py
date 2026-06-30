@@ -335,14 +335,7 @@ def load_config():
     return {}
 
 def db_ok() -> bool:
-    # 有 spreadsheet_id（設定檔或 st.secrets 任一即可）
-    if load_config().get("spreadsheet_id"):
-        return True
-    try:
-        return bool(st.secrets.get("gcp", {}).get("spreadsheet_id") or
-                    st.secrets.get("spreadsheet_id"))
-    except Exception:
-        return False
+    return bool(_get_spreadsheet_id())
 
 def _get_spreadsheet_id() -> str:
     sid = load_config().get("spreadsheet_id", "")
@@ -354,7 +347,7 @@ def _get_spreadsheet_id() -> str:
     except Exception:
         return ""
 
-@st.cache_resource(ttl=3600)
+@st.cache_resource(ttl=3000)
 def _get_gc():
     """Return authorised gspread client. Priority: st.secrets SA → local SA JSON → gcloud token."""
     if not HAS_GSPREAD:
@@ -479,8 +472,16 @@ def fetch_all_candidates() -> list:
     app_map: dict = {}
     for a in apps:
         cid = a.get("candidate_id", "")
-        if cid and cid not in app_map:
+        if not cid:
+            continue
+        # 同一候選人有多筆 application，保留流程狀態最後更新的那筆
+        existing = app_map.get(cid)
+        if not existing:
             app_map[cid] = a
+        else:
+            # 以建立時間較新者為主（較新 = 更能代表目前進度）
+            if a.get("建立時間", "") > existing.get("建立時間", ""):
+                app_map[cid] = a
 
     score_map: dict = {}
     for s in score:
@@ -638,6 +639,7 @@ def update_stage(cid: str, new_stage: str) -> bool:
         for i, row in enumerate(rows[1:], start=2):
             if len(row) > cid_col and row[cid_col] == cid:
                 ws.update_cell(i, flow_col + 1, flow)
+                break  # 只更新第一筆，避免多職缺應徵互蓋
         _invalidate()
         return True
     except Exception as e:
@@ -673,8 +675,10 @@ def save_interview(data: dict) -> bool:
             "下一步行動":     data.get("next_action", ""),
             "記錄時間":       datetime.now().strftime("%Y-%m-%d %H:%M"),
         }
-        key = "interview_id" if row_data.get("interview_id") else "candidate_id"
-        _upsert_row(ws, key, row_data)
+        if not row_data["interview_id"]:
+            import time as _time
+            row_data["interview_id"] = f"IV-{row_data['candidate_id']}-{int(_time.time())}"
+        _upsert_row(ws, "interview_id", row_data)
         _invalidate()
         return True
     except Exception as e:
@@ -822,8 +826,9 @@ def import_from_screening(results: list, job_id: str) -> int:
             ws03.append_row([a03.get(h, "") for h in h03],
                              value_input_option="RAW", insert_data_option="INSERT_ROWS")
             imported += 1
-        except Exception:
-            pass
+        except Exception as e:
+            st.warning(f"匯入失敗（{name}）：{e}")
+            continue
     if imported:
         _invalidate()
     return imported
@@ -1705,9 +1710,7 @@ def page_onboarding():
                 current = bool(h.get(key))
                 checked = col.checkbox(label, value=current, key=f"ob_{cid}_{key}")
                 if checked != current:
-                    now_str = datetime.now().isoformat()
-                    new_h[key] = True if checked else False
-                    new_h[key.replace("_done", "_done_at").replace("_sent", "_sent_at").replace("_signed", "_signed_at")] = now_str if checked else None
+                    new_h[key] = checked
                     changed = True
 
             if changed:
@@ -1802,8 +1805,8 @@ def page_analytics():
         return dt and start_d <= dt.date() <= end_d
 
     cands_f = [c for c in all_cands if in_range(c, "created_at")]
-    ivs_f   = [iv for iv in all_ivs  if in_range(iv, "created_at")]
-    hires_f = [h for h in all_hires  if in_range(h, "created_at")]
+    ivs_f   = [iv for iv in all_ivs  if in_range(iv, "scheduled_at")]
+    hires_f = [h  for h  in all_hires if in_range(h,  "start_date")]
 
     # ── 指標行 ────────────────────────────────────────────────
     st.markdown("---")
