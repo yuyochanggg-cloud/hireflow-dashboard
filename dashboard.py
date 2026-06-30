@@ -89,10 +89,17 @@ h1 {
   color: var(--text) !important;
   line-height: 1.15 !important;
 }
-h2, h3 {
+h2 {
   font-family: var(--font-d) !important;
   font-weight: 700 !important;
+  font-size: 1.3rem !important;
   letter-spacing: -.02em !important;
+}
+h3 {
+  font-family: var(--font-d) !important;
+  font-weight: 700 !important;
+  font-size: 1.05rem !important;
+  letter-spacing: -.015em !important;
 }
 
 /* ── Metric cards ─────────────────────────────────────── */
@@ -117,7 +124,7 @@ h2, h3 {
   letter-spacing: -.02em !important;
 }
 [data-testid="stMetric"] label {
-  font-size: 0.65rem !important;
+  font-size: 0.72rem !important;
   font-weight: 700 !important;
   text-transform: uppercase !important;
   letter-spacing: .1em !important;
@@ -426,7 +433,7 @@ def _sheet_to_dicts(sh, name: str) -> list:
     try:
         ws = sh.worksheet(name)
         rows = ws.get_all_values()
-        if len(rows) < 1:
+        if not rows:
             return []
         headers = rows[0]
         return [dict(zip(headers, row)) for row in rows[1:] if any(row)]
@@ -574,12 +581,8 @@ def fetch_all_hires() -> list:
 
 def _candidates_with_join(rows: list, jobs: list) -> list:
     job_map = {j["id"]: j["title"] for j in jobs}
-    result = []
-    for c in rows:
-        c2 = dict(c)
-        c2["_job_title"] = job_map.get(str(c.get("job_opening_id", "")), "")
-        result.append(c2)
-    return result
+    return [{**c, "_job_title": job_map.get(str(c.get("job_opening_id", "")), "")}
+            for c in rows]
 
 def _interviews_with_join(ivs: list, cands: list, jobs: list) -> list:
     cand_map = {c["id"]: c for c in cands}
@@ -760,7 +763,7 @@ def grade_badge(grade: str) -> str:
     g = _html.escape(str(grade))
     return (f'<span style="background:{gm[0]};color:{gm[1]};border:2px solid {gm[2]};'
             f'border-radius:5px;font-weight:800;font-size:0.85rem;padding:2px 8px;'
-            f'font-family:var(--font-mono);">{gm[3]} {g}</span>')
+            f'font-family:var(--font-m);">{gm[3]} {g}</span>')
 
 def stage_badge(stage: str) -> str:
     bg = STAGE_BG.get(stage, "#f1f5f9")
@@ -870,7 +873,7 @@ def page_overview():
     # ── 雙週排程（左：本週｜右：下週）────────────────────────
     def render_week(col, label: str, start: date, end: date):
         col.markdown(
-            f'<div style="font-weight:700;font-size:0.82rem;color:var(--c-primary);'
+            f'<div style="font-weight:700;font-size:0.82rem;color:var(--p);'
             f'text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">'
             f'📅 {label}（{start.strftime("%m/%d")}–{end.strftime("%m/%d")}）</div>',
             unsafe_allow_html=True,
@@ -949,7 +952,7 @@ def page_overview():
     # ── 待處理 Action Items ────────────────────────────────────
     st.markdown("---")
     st.markdown(
-        '<div style="font-weight:700;font-size:0.82rem;color:var(--c-primary);'
+        '<div style="font-weight:700;font-size:0.82rem;color:var(--p);'
         'text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">'
         '⚡ 待處理事項</div>',
         unsafe_allow_html=True,
@@ -1030,10 +1033,17 @@ def page_kanban():
             f'<div style="background:{bg};border:1px solid {fg}33;border-radius:7px;'
             f'padding:6px 10px;text-align:center;margin-bottom:8px;">'
             f'<div style="font-weight:800;color:{fg};font-size:0.8rem;">{icon} {label}</div>'
-            f'<div style="font-family:var(--font-mono);font-size:1.3rem;font-weight:700;color:{fg};">'
+            f'<div style="font-family:var(--font-m);font-size:1.3rem;font-weight:700;color:{fg};">'
             f'{len(stage_cands)}</div></div>',
             unsafe_allow_html=True,
         )
+        if not stage_cands:
+            col.markdown(
+                f'<div style="border:1.5px dashed {fg}44;border-radius:7px;'
+                f'padding:18px 8px;text-align:center;margin-top:4px;'
+                f'color:{fg}88;font-size:0.78rem;">暫無候選人</div>',
+                unsafe_allow_html=True,
+            )
         for c in stage_cands:
             cid   = c["id"]
             name  = c.get("name", "?")
@@ -1078,7 +1088,6 @@ def page_kanban():
 def page_candidates():
     all_jobs  = fetch_all_jobs()
     all_cands = _candidates_with_join(fetch_all_candidates(), all_jobs)
-    job_map   = {j["id"]: j["title"] for j in all_jobs}
 
     # Filters
     f1, f2, f3, f4 = st.columns([2.5, 2, 1.2, 2])
@@ -1129,19 +1138,19 @@ def page_candidates():
         st.info("無符合條件的候選人。")
     else:
         for c in rows:
-            _render_candidate_card(c, job_map, all_jobs)
+            _render_candidate_card(c, all_jobs)
 
     st.divider()
     _render_import_section(all_jobs)
 
-def _render_candidate_card(c: dict, job_map: dict, all_jobs: list):
+def _render_candidate_card(c: dict, all_jobs: list):
     cid    = c["id"]
     grade  = c.get("grade", "?")
     stage  = c.get("stage", "screening")
     name   = c.get("name", "?")
     code   = str(c.get("code_104") or "—")
     stab   = c.get("stability", "")
-    jtitle = c.get("_job_title") or job_map.get(str(c.get("job_opening_id", "")), "")
+    jtitle = c.get("_job_title", "")
     stab_color = {"高": "#15803d", "中": "#92400e", "低": "#b91c1c"}.get(stab, "#64748b")
     cur_idx = STAGE_KEYS.index(stage) if stage in STAGE_KEYS else 0
 
@@ -1174,16 +1183,16 @@ def _render_candidate_card(c: dict, job_map: dict, all_jobs: list):
         with st.expander("詳細 / 快速安排面試", expanded=False):
             dc1, dc2 = st.columns(2)
             dc1.markdown(
-                f'<div style="background:var(--c-ok-bg);border:1px solid var(--c-ok-border);'
+                f'<div style="background:var(--ok-bg);border:1px solid var(--ok-bd);'
                 f'border-radius:6px;padding:8px 10px;font-size:0.82rem;">'
-                f'<b style="color:var(--c-ok);">✨ 戰功亮點</b><br>'
+                f'<b style="color:var(--ok);">✨ 戰功亮點</b><br>'
                 f'{_html.escape(c.get("highlights") or "—")}</div>',
                 unsafe_allow_html=True,
             )
             dc2.markdown(
-                f'<div style="background:var(--c-err-bg);border:1px solid var(--c-err-border);'
+                f'<div style="background:var(--err-bg);border:1px solid var(--err-bd);'
                 f'border-radius:6px;padding:8px 10px;font-size:0.82rem;">'
-                f'<b style="color:var(--c-err);">⚠️ 缺口地雷</b><br>'
+                f'<b style="color:var(--err);">⚠️ 缺口地雷</b><br>'
                 f'{_html.escape(c.get("gaps") or "—")}</div>',
                 unsafe_allow_html=True,
             )
@@ -1222,10 +1231,12 @@ def _render_import_section(all_jobs: list):
         except Exception:
             st.error("last_session_results.json 格式錯誤。")
             return
-        a_n = sum(1 for r in results if r.get("初篩判定") == "合格"
-                  and str(r.get("綜合推薦度", "")).upper().startswith("A"))
-        b_n = sum(1 for r in results if r.get("初篩判定") == "合格"
-                  and str(r.get("綜合推薦度", "")).upper().startswith("B"))
+        a_n = b_n = 0
+        for r in results:
+            if r.get("初篩判定") == "合格":
+                g = str(r.get("綜合推薦度", "")).upper()
+                if g.startswith("A"): a_n += 1
+                elif g.startswith("B"): b_n += 1
         st.info(f"上次初篩：🏆 A 級 {a_n} 人 · ✅ B 級 {b_n} 人（共可匯入 {a_n+b_n} 人）")
         import_job = st.selectbox("匯入至職缺", [j["title"] for j in all_jobs], key="imp_job")
         import_jid = next((j["id"] for j in all_jobs if j["title"] == import_job), None)
@@ -1280,7 +1291,6 @@ def _build_cal_events(ivs_joined: list, all_hires: list, cand_map: dict) -> list
 
 def _render_week_cal(week_start: date, events: list) -> str:
     """Google Calendar 風格週視圖 HTML。"""
-    WD_HDR  = ["一", "二", "三", "四", "五", "六", "日"]
     today_d = date.today()
     days    = [week_start + timedelta(days=i) for i in range(7)]
 
@@ -1310,7 +1320,7 @@ def _render_week_cal(week_start: date, events: list) -> str:
             f'<div style="flex:1;text-align:center;padding:6px 2px;'
             f'border-left:1px solid #e2e8f0;">'
             f'<div style="font-size:0.68rem;font-weight:600;color:{lbl_fg};'
-            f'text-transform:uppercase;letter-spacing:.04em;">週{WD_HDR[d.weekday()]}</div>'
+            f'text-transform:uppercase;letter-spacing:.04em;">週{WD_ZH[d.weekday()]}</div>'
             f'<div style="display:inline-flex;align-items:center;justify-content:center;'
             f'width:30px;height:30px;border-radius:50%;background:{num_bg};'
             f'font-size:0.95rem;font-weight:800;color:{num_fg};margin-top:1px;">'
@@ -1385,7 +1395,6 @@ def _render_week_cal(week_start: date, events: list) -> str:
 
 def _render_month_cal(year: int, month: int, events: list) -> str:
     """Google Calendar 風格月視圖 HTML。"""
-    WD_HDR  = ["一", "二", "三", "四", "五", "六", "日"]
     today_d = date.today()
 
     ev_by_day: dict[date, list] = {}
@@ -1399,7 +1408,7 @@ def _render_month_cal(year: int, month: int, events: list) -> str:
 
     # Day-of-week header
     html += '<div style="display:grid;grid-template-columns:repeat(7,1fr);background:#f8fafc;border-bottom:2px solid #e2e8f0;">'
-    for i, wd in enumerate(WD_HDR):
+    for i, wd in enumerate(WD_ZH):
         c = "#94a3b8" if i >= 5 else "#6b7280"
         html += (f'<div style="text-align:center;padding:8px 4px;font-size:0.72rem;'
                  f'font-weight:700;color:{c};">週{wd}</div>')
@@ -1454,6 +1463,7 @@ def page_interviews():
     all_hires = fetch_all_hires()
     ivs       = _interviews_with_join(all_ivs, all_cands, all_jobs)
     cand_map  = {c["id"]: c for c in all_cands}
+    job_map   = {j["id"]: j["title"] for j in all_jobs}
     cal_evs   = _build_cal_events(ivs, all_hires, cand_map)
 
     itab1, itab2 = st.tabs(["📅 行事曆", "📝 記分卡"])
@@ -1531,7 +1541,6 @@ def page_interviews():
             if not eligible:
                 st.info("目前無可安排面試的候選人。")
             else:
-                job_map = {j["id"]: j["title"] for j in all_jobs}
                 opts = {f"{c['name']} — {job_map.get(str(c.get('job_opening_id','')),'')}": c
                         for c in eligible}
                 sel_c = opts[st.selectbox("候選人", list(opts.keys()), key="cal_cand")]
@@ -1564,8 +1573,7 @@ def page_interviews():
             st.info("目前無需填寫記分卡的候選人。")
             return
 
-        job_map2 = {j["id"]: j["title"] for j in all_jobs}
-        opts2 = {f"{c['name']} — {job_map2.get(str(c.get('job_opening_id','')),'')}": c
+        opts2 = {f"{c['name']} — {job_map.get(str(c.get('job_opening_id','')),'')}": c
                  for c in eligible2}
         sel_c2 = opts2[st.selectbox("選擇候選人", list(opts2.keys()), key="sc_cand")]
         cid2   = sel_c2["id"]
@@ -1813,7 +1821,7 @@ def page_analytics():
     am1, am2, am3, am4 = st.columns(4)
     am1.metric("新進候選人", len(cands_f))
     am2.metric("進行面試", len(ivs_f))
-    hired_n = sum(1 for h in hires_f)
+    hired_n = len(hires_f)
     am3.metric("完成錄取", hired_n)
     pass_rate = (sum(1 for iv in ivs_f if iv.get("result") == "pass") / len(ivs_f) * 100
                  if ivs_f else 0)
@@ -1827,8 +1835,8 @@ def page_analytics():
         st.subheader("📊 招募漏斗")
         # 計算每個 stage 曾經到達的人數
         # 用「目前 stage 的 index >= stage_index」來估計
-        funnel_labels = [STAGE_LABEL[s] for s in STAGE_KEYS if s != "rejected"]
-        funnel_keys   = [s for s in STAGE_KEYS if s != "rejected"]
+        funnel_stages = [(s, STAGE_LABEL[s]) for s in STAGE_KEYS if s != "rejected"]
+        funnel_keys, funnel_labels = zip(*funnel_stages) if funnel_stages else ([], [])
         funnel_counts = []
         for i, sk in enumerate(funnel_keys):
             cnt = sum(
@@ -2061,25 +2069,45 @@ with st.sidebar:
         st.rerun()
     st.caption(f"今天：{date.today().strftime('%Y/%m/%d')}")
 
+_PAGE_META = {
+    "🏠 本週 + 下週總覽": ("🏠 本週 + 下週總覽", "面試行程 · 報到事件 · 待辦事項一覽"),
+    "🗂️ 招募看板":        ("🗂️ 招募看板",         "拖拉式流程追蹤，快速推進候選人狀態"),
+    "👤 候選人":           ("👤 候選人管理",        "查閱評分、篩選條件、推薦主管"),
+    "📅 面試管理":         ("📅 面試管理",          "排程、記錄面試結果與評分"),
+    "✅ 到職流程":         ("✅ 到職流程",          "錄取後 Onboarding checklist 追蹤"),
+    "📈 分析報表":         ("📈 分析報表",          "漏斗轉換率 · 時效 · 趨勢圖表"),
+    "📋 職缺管理":         ("📋 職缺管理",          "新增、編輯、追蹤開缺狀態"),
+}
+
+def _page_header(page_key: str):
+    title, subtitle = _PAGE_META.get(page_key, (page_key, ""))
+    st.title(title)
+    if subtitle:
+        st.markdown(
+            f'<div style="margin-top:-12px;margin-bottom:8px;font-size:0.82rem;'
+            f'color:var(--muted);font-family:var(--font-b);">{subtitle}</div>',
+            unsafe_allow_html=True,
+        )
+
 # Render selected page
 if page == "🏠 本週 + 下週總覽":
-    st.title("🏠 本週 + 下週總覽")
+    _page_header(page)
     page_overview()
 elif page == "🗂️ 招募看板":
-    st.title("🗂️ 招募看板")
+    _page_header(page)
     page_kanban()
 elif page == "👤 候選人":
-    st.title("👤 候選人管理")
+    _page_header(page)
     page_candidates()
 elif page == "📅 面試管理":
-    st.title("📅 面試管理")
+    _page_header(page)
     page_interviews()
 elif page == "✅ 到職流程":
-    st.title("✅ 到職流程")
+    _page_header(page)
     page_onboarding()
 elif page == "📈 分析報表":
-    st.title("📈 分析報表")
+    _page_header(page)
     page_analytics()
 elif page == "📋 職缺管理":
-    st.title("📋 職缺管理")
+    _page_header(page)
     page_jobs()
