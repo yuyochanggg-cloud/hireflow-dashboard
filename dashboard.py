@@ -12,17 +12,18 @@ import urllib.parse
 try:
     import gspread
     from google.oauth2.service_account import Credentials as _SACredentials
-    import google.oauth2.credentials
-    import subprocess as _sp
+    from google.auth import default as _google_auth_default
+    from google.auth import impersonated_credentials as _impersonated_credentials
     HAS_GSPREAD = True
 except ImportError:
     HAS_GSPREAD = False
 
 _SA_SCOPES = [
-    "https://spreadsheets.google.com/feeds",
-    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/spreadsheets",
 ]
 
+# 用服務帳號模擬（impersonation）取代 gcloud 使用者 token，避免 Google 對 gcloud
+# 預設 client 的敏感 scope 封鎖；與 app.py 用同一個 SA，不需要下載金鑰檔案。
 try:
     import plotly.express as px
     import plotly.graph_objects as go
@@ -245,7 +246,11 @@ hr { border-color: var(--border) !important; margin: 1.5rem 0 !important; }
 [data-testid="stSidebar"] * { color: #94a3b8 !important; }
 [data-testid="stSidebar"] hr { border-color: #1e293b !important; }
 
-/* Nav items */
+/* Nav items — hide radio circles */
+[data-testid="stSidebar"] [data-testid="stRadio"] label > div:first-child,
+[data-testid="stSidebar"] [data-testid="stRadio"] [role="radio"],
+[data-testid="stSidebar"] [data-testid="stRadio"] input[type="radio"],
+[data-testid="stSidebar"] [data-testid="stRadio"] span[data-baseweb="radio"] { display: none !important; }
 [data-testid="stSidebar"] [data-testid="stRadio"] label {
   display: block !important;
   padding: 9px 14px !important;
@@ -304,22 +309,10 @@ hr { border-color: var(--border) !important; margin: 1.5rem 0 !important; }
 
 # ── Constants ─────────────────────────────────────────────────
 CONFIG_FILE       = "gsheet_config.json"   # shared with sync_to_gsheet.py
-LAST_RESULTS_FILE = "last_session_results.json"
 
-STAGES = [
-    # key,                   label,      icon, bg,        fg
-    ("screening",           "初篩中",   "🔍", "#ede9fe", "#5b21b6"),  # violet
-    ("interview_scheduled", "已約面試", "📅", "#fef3c7", "#92400e"),  # amber
-    ("interviewed",         "已面試",   "✅", "#d1fae5", "#065f46"),  # emerald
-    ("offer_pending",       "錄取審核", "📋", "#fce7f3", "#9d174d"),  # rose
-    ("hired",               "已錄取",   "🎉", "#dcfce7", "#14532d"),  # green
-    ("rejected",            "已結案",   "❌", "#f3f4f6", "#374151"),  # slate
-]
-STAGE_KEYS  = [s[0] for s in STAGES]
-STAGE_LABEL = {s[0]: s[1] for s in STAGES}
-STAGE_ICON  = {s[0]: s[2] for s in STAGES}
-STAGE_BG    = {s[0]: s[3] for s in STAGES}
-STAGE_FG    = {s[0]: s[4] for s in STAGES}
+# STAGES / STAGE_KEYS / STAGE_LABEL / STAGE_ICON / STAGE_BG / STAGE_FG
+# 定義已搬移至 hr_schema.py（單一來源）
+from hr_schema import STAGES, STAGE_KEYS, STAGE_LABEL, STAGE_ICON, STAGE_BG, STAGE_FG
 
 GRADE_META = {
     # grade: (bg, text, border, icon)
@@ -341,6 +334,11 @@ def load_config():
             return json.load(f)
     return {}
 
+def _load_impersonate_sa() -> str:
+    """讀取服務帳號模擬用的 SA email，不寫死在程式碼裡——這個 repo 有推公開 GitHub，
+    寫死會把 GCP 專案 ID 跟 SA email 曝光。"""
+    return load_config().get("impersonate_sa", "")
+
 def db_ok() -> bool:
     return bool(_get_spreadsheet_id())
 
@@ -356,32 +354,27 @@ def _get_spreadsheet_id() -> str:
 
 @st.cache_resource(ttl=3000)
 def _get_gc():
-    """Return authorised gspread client. Priority: st.secrets SA → local SA JSON → gcloud token."""
+    """Return authorised gspread client。優先順序：st.secrets SA（Streamlit Cloud 部署用）→
+    本機模擬 hr-sheets-sync 服務帳號（本機開發用，不需要下載金鑰檔案）。"""
     if not HAS_GSPREAD:
         return None
-    # 1. Streamlit Cloud / st.secrets service account
+    # 1. Streamlit Cloud / st.secrets service account（雲端部署才會用到）
     try:
         sa_info = dict(st.secrets["gcp_service_account"])
         creds = _SACredentials.from_service_account_info(sa_info, scopes=_SA_SCOPES)
         return gspread.authorize(creds)
     except Exception:
         pass
-    # 2. Local service_account.json
-    local_sa = os.path.join(os.path.dirname(__file__), "service_account.json")
-    if os.path.exists(local_sa):
-        try:
-            creds = _SACredentials.from_service_account_file(local_sa, scopes=_SA_SCOPES)
-            return gspread.authorize(creds)
-        except Exception:
-            pass
-    # 3. Fallback: gcloud ADC token (local dev)
+    # 2. 本機開發：模擬服務帳號（用現有 gcloud 登入身份換發 SA token，不需要金鑰檔案）
     try:
-        result = _sp.run("gcloud auth print-access-token",
-                         capture_output=True, text=True, shell=True)
-        token = result.stdout.strip()
-        if token:
-            creds = google.oauth2.credentials.Credentials(token=token)
-            return gspread.authorize(creds)
+        source_creds, _ = _google_auth_default()
+        creds = _impersonated_credentials.Credentials(
+            source_credentials=source_creds,
+            target_principal=_load_impersonate_sa(),
+            target_scopes=_SA_SCOPES,
+            lifetime=300,
+        )
+        return gspread.authorize(creds)
     except Exception:
         pass
     return None
@@ -399,47 +392,41 @@ def _get_sheet():
         return None
 
 # ── Stage / status mapping ────────────────────────────────────
-FLOW_TO_STAGE = {
-    "初篩完成":   "screening",
-    "已推薦主管": "interview_scheduled",
-    "已約面試":   "interview_scheduled",
-    "已面試":     "interviewed",
-    "面試完成":   "interviewed",
-    "錄取審核":   "offer_pending",
-    "已錄取":     "hired",
-    "已結案":     "rejected",
-    "已拒絕":     "rejected",
-}
-STAGE_TO_FLOW = {
-    "screening":           "初篩完成",
-    "interview_scheduled": "已約面試",
-    "interviewed":         "已面試",
-    "offer_pending":       "錄取審核",
-    "hired":               "已錄取",
-    "rejected":            "已結案",
-}
-_RESULT_MAP = {
-    "通過": "pass", "pass": "pass",
-    "未通過": "fail", "fail": "fail",
-    "待定": "pending",
-}
-_STATUS_MAP = {
-    "招募中": "open", "暫停中": "paused", "已結束": "closed",
-    "open": "open", "paused": "paused", "closed": "closed",
-}
+# FLOW_TO_STAGE / STAGE_TO_FLOW / _RESULT_MAP / _STATUS_MAP
+# 定義已搬移至 hr_schema.py（單一來源），此處保留同名別名避免動到下游程式碼
+from hr_schema import (
+    FLOW_TO_STAGE, STAGE_TO_FLOW,
+    RESULT_MAP as _RESULT_MAP,
+    STATUS_MAP as _STATUS_MAP,
+)
 
 # ── Sheets reader ─────────────────────────────────────────────
 def _sheet_to_dicts(sh, name: str) -> list:
-    try:
-        ws = sh.worksheet(name)
-        rows = ws.get_all_values()
-        if not rows:
+    import time as _t
+    for attempt in range(3):
+        try:
+            ws = sh.worksheet(name)
+            rows = ws.get_all_values()
+            if not rows:
+                return []
+            headers = rows[0]
+            result = []
+            for r_idx, row in enumerate(rows[1:], start=2):
+                if not any(row):
+                    continue
+                # 補齊欄位，確保所有 header 都在 dict 裡（保留欄位順序供 update_stage 用）
+                padded = row + [''] * max(0, len(headers) - len(row))
+                d = dict(zip(headers, padded))
+                d['_row'] = r_idx   # 保留實際列號，讓 update_stage 不需重新讀表
+                result.append(d)
+            return result
+        except Exception as e:
+            if '429' in str(e) and attempt < 2:
+                _t.sleep(2 ** attempt)  # 1s → 2s 退讓
+                continue
+            st.error(f"讀取 {name} 失敗：{e}")
             return []
-        headers = rows[0]
-        return [dict(zip(headers, row)) for row in rows[1:] if any(row)]
-    except Exception as e:
-        st.error(f"讀取 {name} 失敗：{e}")
-        return []
+    return []
 
 @st.cache_data(ttl=60, show_spinner="載入資料中…")
 def _load_all_sheets() -> dict:
@@ -448,10 +435,60 @@ def _load_all_sheets() -> dict:
         return {}
     names = ["01_職缺主檔", "02_候選人主檔", "03_應徵主檔",
              "04_評分主檔", "05_面試主檔", "06_員工主檔"]
-    return {n: _sheet_to_dicts(sh, n) for n in names}
+    result = {n: _sheet_to_dicts(sh, n) for n in names}
+    # 若關鍵表（候選人/應徵）全空，代表可能是 429 快取污染，不存快取
+    if not result.get("02_候選人主檔") and not result.get("03_應徵主檔"):
+        _load_all_sheets.clear()
+    return result
 
 def _invalidate():
     _load_all_sheets.clear()
+
+# ── Local backup ─────────────────────────────────────────────
+def _sheet_rows_for_backup(sh, name: str) -> list:
+    """近似 _sheet_to_dicts，但讀取失敗時 raise 例外而非吞掉並回傳空清單，
+    確保備份功能不會把 429/連線失敗誤當成「這張表本來就是空的」而靜默寫出空檔。"""
+    import time as _t
+    for attempt in range(3):
+        try:
+            ws = sh.worksheet(name)
+            rows = ws.get_all_values()
+            if not rows:
+                return []
+            headers = rows[0]
+            result = []
+            for row in rows[1:]:
+                if not any(row):
+                    continue
+                padded = row + [''] * max(0, len(headers) - len(row))
+                result.append(dict(zip(headers, padded)))
+            return result
+        except Exception as e:
+            if '429' in str(e) and attempt < 2:
+                _t.sleep(2 ** attempt)
+                continue
+            raise RuntimeError(f"讀取「{name}」失敗：{e}") from e
+    return []
+
+def backup_sheets_to_local() -> tuple:
+    """把六主檔各存成一份 CSV 到 backups/{今天日期}/ 底下。回傳 (成功與否, 訊息)。
+    同一天重複執行會直接覆蓋當天的備份檔（不做多版本）。"""
+    sh = _get_sheet()
+    if not sh:
+        return False, "無法連線至 Google Sheets，請確認驗證設定與 spreadsheet_id 是否正確"
+    names = ["01_職缺主檔", "02_候選人主檔", "03_應徵主檔",
+             "04_評分主檔", "05_面試主檔", "06_員工主檔"]
+    today_str = date.today().strftime("%Y-%m-%d")
+    backup_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backups", today_str)
+    try:
+        os.makedirs(backup_dir, exist_ok=True)
+        for name in names:
+            rows = _sheet_rows_for_backup(sh, name)
+            df = pd.DataFrame(rows)
+            df.to_csv(os.path.join(backup_dir, f"{name}.csv"), index=False, encoding="utf-8-sig")
+        return True, today_str
+    except Exception as e:
+        return False, str(e)
 
 # ── Fetch functions ───────────────────────────────────────────
 def fetch_all_jobs() -> list:
@@ -487,7 +524,7 @@ def fetch_all_candidates() -> list:
             app_map[cid] = a
         else:
             # 以建立時間較新者為主（較新 = 更能代表目前進度）
-            if a.get("建立時間", "") > existing.get("建立時間", ""):
+            if a.get("應徵批次日期", "") > existing.get("應徵批次日期", ""):
                 app_map[cid] = a
 
     score_map: dict = {}
@@ -515,12 +552,13 @@ def fetch_all_candidates() -> list:
             "job_opening_id":  a.get("job_id", ""),
             "grade":           grade,
             "stage":           stage,
-            "created_at":      c.get("建立日期", a.get("建立時間", "")),
+            "created_at":      c.get("初次進庫日期", a.get("應徵批次日期", "")),
             "stability":       s.get("穩定度評估", ""),
             "commute":         s.get("通勤評估", ""),
             "highlights":      s.get("客觀戰功亮點", ""),
             "gaps":            s.get("缺口與潛在地雷", ""),
             "screening_notes": a.get("初篩判定", s.get("初篩判定", "")),
+            "note":            a.get("備註", ""),
         })
     return result
 
@@ -598,8 +636,20 @@ def _interviews_with_join(ivs: list, cands: list, jobs: list) -> list:
     return sorted(result, key=lambda x: str(x.get("scheduled_at") or ""))
 
 # ── Write Helpers ─────────────────────────────────────────────
+def _with_429_retry(fn):
+    """比照 _sheet_to_dicts 的 429 指數退讓重試（1s → 2s），最多 3 次嘗試。"""
+    import time as _t
+    for attempt in range(3):
+        try:
+            return fn()
+        except Exception as e:
+            if '429' in str(e) and attempt < 2:
+                _t.sleep(2 ** attempt)
+                continue
+            raise
+
 def _upsert_row(ws, key_col: str, data: dict) -> bool:
-    rows = ws.get_all_values()
+    rows = _with_429_retry(lambda: ws.get_all_values())
     if not rows:
         return False
     headers = rows[0]
@@ -617,10 +667,11 @@ def _upsert_row(ws, key_col: str, data: dict) -> bool:
             if h in data:
                 cells.append(gspread.Cell(row_n, ci + 1, str(data[h])))
         if cells:
-            ws.update_cells(cells, value_input_option="RAW")
+            _with_429_retry(lambda: ws.update_cells(cells, value_input_option="RAW"))
     else:
-        ws.append_row([str(data.get(h, "")) for h in headers],
-                      value_input_option="RAW", insert_data_option="INSERT_ROWS")
+        _with_429_retry(lambda: ws.append_row(
+            [str(data.get(h, "")) for h in headers],
+            value_input_option="RAW", insert_data_option="INSERT_ROWS"))
     return True
 
 # ── Write Wrappers ────────────────────────────────────────────
@@ -629,24 +680,51 @@ def update_stage(cid: str, new_stage: str) -> bool:
     if not sh:
         return False
     try:
-        ws = sh.worksheet("03_應徵主檔")
         flow = STAGE_TO_FLOW.get(new_stage, new_stage)
-        rows = ws.get_all_values()
-        if not rows:
+        # 用快取資料找列號，避免額外 API read（防止 429）
+        cached_apps = _load_all_sheets().get("03_應徵主檔", [])
+        target = next((a for a in cached_apps if a.get("candidate_id") == cid), None)
+        if not target or "_row" not in target:
+            st.error("找不到候選人資料，請重新整理後再試")
             return False
-        headers = rows[0]
-        if "candidate_id" not in headers or "流程狀態" not in headers:
+        row_num = target["_row"]
+        # dict keys 保留欄位順序（Python 3.7+），排除 _row 後即為原始 headers
+        headers = [k for k in target.keys() if k != "_row"]
+        if "流程狀態" not in headers:
+            st.error("試算表缺少「流程狀態」欄位")
             return False
-        cid_col  = headers.index("candidate_id")
-        flow_col = headers.index("流程狀態")
-        for i, row in enumerate(rows[1:], start=2):
-            if len(row) > cid_col and row[cid_col] == cid:
-                ws.update_cell(i, flow_col + 1, flow)
-                break  # 只更新第一筆，避免多職缺應徵互蓋
+        flow_col = headers.index("流程狀態") + 1  # gspread 1-indexed
+        ws = sh.worksheet("03_應徵主檔")
+        ws.update_cell(row_num, flow_col, flow)
         _invalidate()
         return True
     except Exception as e:
         st.error(f"更新失敗：{e}")
+        return False
+
+def update_note(cid: str, note: str) -> bool:
+    sh = _get_sheet()
+    if not sh:
+        return False
+    try:
+        # 用快取資料找列號，避免額外 API read（防止 429）
+        cached_apps = _load_all_sheets().get("03_應徵主檔", [])
+        target = next((a for a in cached_apps if a.get("candidate_id") == cid), None)
+        if not target or "_row" not in target:
+            st.error("找不到候選人資料，請重新整理後再試")
+            return False
+        row_num = target["_row"]
+        headers = [k for k in target.keys() if k != "_row"]
+        if "備註" not in headers:
+            st.error("試算表缺少「備註」欄位")
+            return False
+        note_col = headers.index("備註") + 1  # gspread 1-indexed
+        ws = sh.worksheet("03_應徵主檔")
+        ws.update_cell(row_num, note_col, note)
+        _invalidate()
+        return True
+    except Exception as e:
+        st.error(f"備註更新失敗：{e}")
         return False
 
 def save_interview(data: dict) -> bool:
@@ -779,62 +857,6 @@ def gcal_link(title: str, start_dt: datetime, duration_min=60, desc="", location
          "dates": f"{start_dt.strftime(fmt)}/{end_dt.strftime(fmt)}",
          "details": desc, "location": location}
     return "https://calendar.google.com/calendar/render?" + urllib.parse.urlencode(p)
-
-def import_from_screening(results: list, job_id: str) -> int:
-    sh = _get_sheet()
-    if not sh:
-        return 0
-    import re as _re, time as _time
-    existing_codes = {str(c.get("code_104", "")) for c in fetch_all_candidates() if c.get("code_104")}
-    today = _time.strftime("%Y-%m-%d")
-    try:
-        ws02 = sh.worksheet("02_候選人主檔")
-        ws03 = sh.worksheet("03_應徵主檔")
-        h02 = ws02.row_values(1)
-        h03 = ws03.row_values(1)
-    except Exception as e:
-        st.error(f"匯入失敗：{e}")
-        return 0
-
-    imported = 0
-    job_safe = _re.sub(r"[^\w\-]", "_", job_id)[:20]
-    for r in results:
-        if r.get("初篩判定") != "合格":
-            continue
-        grade = str(r.get("綜合推薦度", "")).strip().upper()
-        if not grade or grade[0] not in ("A", "B"):
-            continue
-        code = str(r.get("104代碼", "")).strip()
-        if code and code not in ("未知代碼", "") and code in existing_codes:
-            continue
-        name = r.get("真實姓名", "未知")
-        cand_id = f"CAND-{code}" if code and code != "未知代碼" else f"CAND-{_re.sub(r'[^\\w]','_',name)[:6]}"
-        app_id  = f"APP-{code or name[:4]}-{job_safe}"
-        try:
-            c02 = {h: "" for h in h02}
-            c02.update({"candidate_id": cand_id, "真實姓名": name,
-                         "104代碼": code, "Email": r.get("Email", ""),
-                         "來源": "104投遞", "建立日期": today})
-            ws02.append_row([c02.get(h, "") for h in h02],
-                             value_input_option="RAW", insert_data_option="INSERT_ROWS")
-            a03 = {h: "" for h in h03}
-            a03.update({"application_id": app_id, "job_id": job_id,
-                         "candidate_id": cand_id, "姓名": name, "104代碼": code,
-                         "應徵日期": today, "應徵來源": "104投遞",
-                         "初篩判定": r.get("初篩判定", ""),
-                         "綜合推薦度": grade[0],
-                         "加權總分": str(r.get("加權總分", "")),
-                         "人才狀態": "待定", "流程狀態": "初篩完成",
-                         "建立時間": today})
-            ws03.append_row([a03.get(h, "") for h in h03],
-                             value_input_option="RAW", insert_data_option="INSERT_ROWS")
-            imported += 1
-        except Exception as e:
-            st.warning(f"匯入失敗（{name}）：{e}")
-            continue
-    if imported:
-        _invalidate()
-    return imported
 
 # ══════════════════════════════════════════════════════════════
 # PAGE 1 — 本週 + 下週總覽
@@ -1004,83 +1026,233 @@ def page_overview():
         st.success("✅ 目前無待處理事項！")
 
 # ══════════════════════════════════════════════════════════════
-# PAGE 2 — 招募看板（Kanban）
+# PAGE 2 — 招募看板（以職缺為單位的摘要卡 → 展開看候選人）
 # ══════════════════════════════════════════════════════════════
+def _kb_stage_pills(counts: dict) -> str:
+    """產生 stage 計數 pill 列的 HTML。"""
+    parts = []
+    for sk, label, icon, bg, fg in STAGES:
+        n = counts.get(sk, 0)
+        if n == 0:
+            continue
+        parts.append(
+            f'<span style="background:{bg};color:{fg};border:1px solid {fg}44;'
+            f'border-radius:20px;font-size:0.72rem;font-weight:700;padding:2px 9px;'
+            f'white-space:nowrap;">{icon} {label} {n}</span>'
+        )
+    return " ".join(parts) if parts else '<span style="color:#94a3b8;font-size:0.78rem;">尚無候選人</span>'
+
+def _kb_grade_bar(counts: dict, total: int) -> str:
+    """A/B/C 比例長條 HTML。"""
+    if not total:
+        return ""
+    bars = ""
+    for g, (bg, _, border, _) in GRADE_META.items():
+        pct = counts.get(g, 0) / total * 100
+        if pct > 0:
+            bars += f'<div style="width:{pct:.0f}%;background:{border};height:100%;"></div>'
+    return (
+        f'<div style="display:flex;width:100%;height:6px;border-radius:99px;'
+        f'overflow:hidden;background:#f1f5f9;margin-top:6px;">{bars}</div>'
+        f'<div style="display:flex;gap:8px;margin-top:4px;">'
+        + "".join(
+            f'<span style="font-size:0.68rem;color:{GRADE_META[g][1]};">'
+            f'{GRADE_META[g][3]}{g} {counts.get(g,0)}</span>'
+            for g in ("A","B","C") if counts.get(g,0)
+        )
+        + "</div>"
+    )
+
 def page_kanban():
+    _col_refresh, _col_rej = st.columns([1, 5])
+    with _col_refresh:
+        if st.button("🔄 重新整理", key="kb_refresh"):
+            _invalidate()
+            st.rerun()
+
     all_cands = fetch_all_candidates()
     all_jobs  = fetch_all_jobs()
-    job_map   = {j["id"]: j["title"] for j in all_jobs}
 
-    # Filter
-    f1, f2 = st.columns([3, 1])
-    with f1:
-        job_opts = ["全部職缺"] + [j["title"] for j in all_jobs if j.get("status") == "open"]
-        sel_job = f1.selectbox("職缺篩選", job_opts, key="kb_job", label_visibility="collapsed")
-    with f2:
-        show_rejected = f2.checkbox("顯示已結案", value=False, key="kb_rejected")
+    show_rejected = _col_rej.checkbox("包含已結案候選人", value=False, key="kb_rejected")
 
-    if sel_job != "全部職缺":
-        jid = next((j["id"] for j in all_jobs if j["title"] == sel_job), None)
-        all_cands = [c for c in all_cands if str(c.get("job_opening_id", "")) == str(jid)]
+    # 以職缺分組（排除初篩中不顯示於看板）
+    KANBAN_STAGES = {"recommended", "interview_scheduled", "interviewed", "offer_pending", "hired"}
+    if show_rejected:
+        KANBAN_STAGES.add("rejected")
 
-    visible_stages = STAGES if show_rejected else [s for s in STAGES if s[0] != "rejected"]
+    job_cands: dict[str, list] = {}
+    no_job = []
+    for c in all_cands:
+        if c.get("stage") not in KANBAN_STAGES:
+            continue
+        jid = str(c.get("job_opening_id", "")).strip()
+        if jid:
+            job_cands.setdefault(jid, []).append(c)
+        else:
+            no_job.append(c)
 
-    # Kanban 欄位
-    cols = st.columns(len(visible_stages))
-    for col, (sk, label, icon, bg, fg) in zip(cols, visible_stages):
-        stage_cands = [c for c in all_cands if c.get("stage") == sk]
-        col.markdown(
-            f'<div style="background:{bg};border:1px solid {fg}33;border-radius:7px;'
-            f'padding:6px 10px;text-align:center;margin-bottom:8px;">'
-            f'<div style="font-weight:800;color:{fg};font-size:0.8rem;">{icon} {label}</div>'
-            f'<div style="font-family:var(--font-m);font-size:1.3rem;font-weight:700;color:{fg};">'
-            f'{len(stage_cands)}</div></div>',
+    all_jobs_with_data = [j for j in all_jobs if j["id"] in job_cands]
+    if no_job:
+        all_jobs_with_data.append({"id": "__none__", "title": "（未指定職缺）", "status": "open"})
+        job_cands["__none__"] = no_job
+
+    if not all_jobs_with_data:
+        st.info("目前無候選人在招募流程中。")
+        return
+
+    # ── 共用：渲染單筆候選人列 ──────────────────────
+    def _render_row(c, jid, sk, c_idx, pfx):
+        cid   = c["id"]
+        name  = c.get("name", "?")
+        grade = c.get("grade", "C")
+        gm    = GRADE_META.get(grade, ("#f8fafc","#475569","#9ca3af","📋"))
+        dt    = parse_dt(c.get("created_at"))
+        days  = (datetime.now() - dt).days if dt else 0
+        if days <= 7:
+            days_color = "#94a3b8"
+        elif days <= 14:
+            days_color = "#d97706"
+        else:
+            days_color = "#dc2626"
+        source = c.get("source", "")
+        note   = c.get("note", "")
+        cur_i = STAGE_KEYS.index(sk) if sk in STAGE_KEYS else 0
+        next_s = [s for s in STAGE_KEYS[cur_i+1:cur_i+2] if s != "rejected"]
+        has_rej = sk not in ("hired", "rejected")
+        btn_n   = len(next_s) + (1 if has_rej else 0)
+        bpfx    = f"{pfx}_{jid}_{sk}_{c_idx}"
+
+        source_badge = (
+            f'&nbsp;<span style="background:#f1f5f9;color:#475569;'
+            f'border-radius:4px;font-size:0.65rem;font-weight:600;padding:1px 5px;">'
+            f'{_html.escape(source)}</span>'
+        ) if source else ""
+
+        ri, ra = st.columns([4, 3])
+        ri.markdown(
+            f'<div style="padding:4px 0;">'
+            f'<span style="font-weight:700;font-size:0.9rem;">{_html.escape(name)}</span>'
+            f'&nbsp;<span style="background:{gm[0]};color:{gm[1]};border:1.5px solid {gm[2]};'
+            f'border-radius:4px;font-size:0.68rem;font-weight:800;padding:1px 5px;">'
+            f'{gm[3]}{grade}</span>'
+            f'{source_badge}'
+            f'<span style="color:{days_color};font-size:0.72rem;margin-left:8px;">{days} 天</span>'
+            f'</div>',
             unsafe_allow_html=True,
         )
-        if not stage_cands:
-            col.markdown(
-                f'<div style="border:1.5px dashed {fg}44;border-radius:7px;'
-                f'padding:18px 8px;text-align:center;margin-top:4px;'
-                f'color:{fg}88;font-size:0.78rem;">暫無候選人</div>',
-                unsafe_allow_html=True,
-            )
-        for c in stage_cands:
-            cid   = c["id"]
-            name  = c.get("name", "?")
-            grade = c.get("grade", "?")
-            jtitle = job_map.get(str(c.get("job_opening_id", "")), "")
-            gm    = GRADE_META.get(grade, ("#f8fafc", "#475569", "#94a3b8", "📋"))
-            dt    = parse_dt(c.get("created_at"))
-            days  = (datetime.now() - dt).days if dt else 0
-
-            with col.container(border=True):
+        note_col1, note_col2 = st.columns([9, 1])
+        with note_col1:
+            if note:
+                note_preview = note if len(note) <= 40 else note[:40] + "…"
                 st.markdown(
-                    f'<div style="display:flex;justify-content:space-between;align-items:center;">'
-                    f'<span style="font-weight:700;font-size:0.88rem;">{_html.escape(name)}</span>'
-                    f'<span style="background:{gm[0]};color:{gm[1]};border:1.5px solid {gm[2]};'
-                    f'border-radius:4px;font-size:0.72rem;font-weight:800;padding:1px 5px;">'
-                    f'{gm[3]}{grade}</span></div>'
-                    f'<div style="font-size:0.72rem;color:#64748b;margin-top:2px;">'
-                    f'{_html.escape(jtitle[:18])} · {days}天</div>',
+                    f'<div style="color:#94a3b8;font-size:0.72rem;padding:0 0 2px;">'
+                    f'📝 {_html.escape(note_preview)}</div>',
                     unsafe_allow_html=True,
                 )
-                # 前進按鈕
-                cur_idx = STAGE_KEYS.index(sk) if sk in STAGE_KEYS else 0
-                next_stages = STAGE_KEYS[cur_idx + 1: cur_idx + 2]  # 只顯示下一個
-                for ns in next_stages:
-                    if ns == "rejected":
-                        continue
-                    if st.button(f"→ {STAGE_LABEL[ns]}", key=f"kb_adv_{cid}",
-                                 use_container_width=True):
+        with note_col2:
+            with st.popover("📝", use_container_width=True):
+                new_note = st.text_area(
+                    "備註", value=note, key=f"{bpfx}_note_ta", label_visibility="collapsed",
+                )
+                if st.button("儲存", key=f"{bpfx}_note_save"):
+                    if update_note(cid, new_note):
+                        st.toast(f"✅ {name} 備註已更新")
+                        st.rerun()
+        with ra:
+            if btn_n > 0:
+                bcols = st.columns(btn_n)
+                for i, ns in enumerate(next_s):
+                    if bcols[i].button(f"→ {STAGE_LABEL[ns]}", key=f"{bpfx}_adv_{ns}", use_container_width=True):
                         if update_stage(cid, ns):
                             st.toast(f"✅ {name} → {STAGE_LABEL[ns]}")
                             st.rerun()
-                if sk not in ("hired", "rejected"):
-                    if st.button("❌ 結案", key=f"kb_rej_{cid}",
-                                 use_container_width=True):
+                if has_rej:
+                    if bcols[len(next_s)].button("結案", key=f"{bpfx}_rej", use_container_width=True):
                         if update_stage(cid, "rejected"):
                             st.toast(f"{name} 已結案")
                             st.rerun()
+        st.markdown('<hr style="margin:2px 0;border-color:#f1f5f9;">', unsafe_allow_html=True)
+
+    # ══════════════════════════════════════════════
+    # 上段：待主管審核
+    # ══════════════════════════════════════════════
+    rec_meta = next(s for s in STAGES if s[0] == "recommended")
+    _, _, rec_icon, rec_bg, rec_fg = rec_meta
+
+    st.markdown("### 👔 待主管審核")
+
+    rec_jobs = [j for j in all_jobs_with_data
+                if any(c.get("stage") == "recommended" for c in job_cands.get(j["id"], []))]
+
+    if not rec_jobs:
+        st.info("目前沒有候選人等待主管審核。")
+    else:
+        for job in rec_jobs:
+            jid    = job["id"]
+            jtitle = job["title"]
+            rec_list = [c for c in job_cands.get(jid, []) if c.get("stage") == "recommended"]
+            with st.container(border=True):
+                st.markdown(
+                    f'<div style="font-weight:800;font-size:1rem;margin-bottom:8px;">'
+                    f'{_html.escape(jtitle)}'
+                    f'<span style="background:{rec_bg};color:{rec_fg};border-radius:4px;'
+                    f'font-size:0.75rem;font-weight:700;padding:2px 8px;margin-left:8px;">'
+                    f'{rec_icon} {len(rec_list)} 人待審</span></div>',
+                    unsafe_allow_html=True,
+                )
+                for c_idx, c in enumerate(rec_list):
+                    _render_row(c, jid, "recommended", c_idx, "ka")
+
+    # ══════════════════════════════════════════════
+    # 下段：招募進度（面試之後）
+    # ══════════════════════════════════════════════
+    PIPELINE_KEYS = {"interview_scheduled", "interviewed", "offer_pending", "hired"}
+    if show_rejected:
+        PIPELINE_KEYS.add("rejected")
+    PIPELINE_STAGE_LIST = [s for s in STAGES if s[0] in PIPELINE_KEYS]
+
+    st.markdown("---")
+    st.markdown("### 📊 招募進度")
+
+    pipe_jobs = [j for j in all_jobs_with_data
+                 if any(c.get("stage") in PIPELINE_KEYS for c in job_cands.get(j["id"], []))]
+
+    if not pipe_jobs:
+        st.info("目前無進行中的面試或後續流程。")
+    else:
+        for job in pipe_jobs:
+            jid    = job["id"]
+            jtitle = job["title"]
+            pcands = [c for c in job_cands.get(jid, []) if c.get("stage") in PIPELINE_KEYS]
+            sc = {}
+            gc = {}
+            for c in pcands:
+                sc[c.get("stage","screening")] = sc.get(c.get("stage","screening"), 0) + 1
+                gc[c.get("grade","C")] = gc.get(c.get("grade","C"), 0) + 1
+
+            with st.container(border=True):
+                st.markdown(
+                    f'<div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:4px;">'
+                    f'<span style="font-weight:800;font-size:1rem;">{_html.escape(jtitle)}</span>'
+                    f'<span style="font-size:0.8rem;font-weight:600;color:#6b7280;">{len(pcands)} 人</span>'
+                    f'<span style="margin-left:4px;">' + _kb_stage_pills(sc) + f'</span></div>'
+                    + _kb_grade_bar(gc, len(pcands)),
+                    unsafe_allow_html=True,
+                )
+                with st.expander(f"展開 {len(pcands)} 位候選人明細", expanded=False):
+                    for sk, label, icon, bg, fg in PIPELINE_STAGE_LIST:
+                        sl = [c for c in pcands if c.get("stage") == sk]
+                        if not sl:
+                            continue
+                        st.markdown(
+                            f'<div style="background:{bg};border-left:4px solid {fg};'
+                            f'border-radius:0 6px 6px 0;padding:4px 10px;margin:8px 0 4px;'
+                            f'font-size:0.78rem;font-weight:800;color:{fg};">'
+                            f'{icon} {label} · {len(sl)} 人</div>',
+                            unsafe_allow_html=True,
+                        )
+                        for c_idx, c in enumerate(sl):
+                            _render_row(c, jid, sk, c_idx, "kb")
 
 # ══════════════════════════════════════════════════════════════
 # PAGE 3 — 候選人
@@ -1140,8 +1312,7 @@ def page_candidates():
         for c in rows:
             _render_candidate_card(c, all_jobs)
 
-    st.divider()
-    _render_import_section(all_jobs)
+    st.caption("💡 初篩結果會在篩選完成後自動同步至 Google Sheets，無需手動匯入。")
 
 def _render_candidate_card(c: dict, all_jobs: list):
     cid    = c["id"]
@@ -1216,39 +1387,6 @@ def _render_candidate_card(c: dict, all_jobs: list):
                         st.success("✅ 面試已安排！")
                         st.link_button("📅 加入 Google 行事曆", link)
                         st.rerun()
-
-def _render_import_section(all_jobs: list):
-    with st.expander("📥 從 AI 初篩匯入候選人", expanded=False):
-        if not os.path.exists(LAST_RESULTS_FILE):
-            st.info("找不到 last_session_results.json，請先在初篩引擎完成篩選。")
-            return
-        if not all_jobs:
-            st.warning("請先建立職缺後再匯入。")
-            return
-        try:
-            with open(LAST_RESULTS_FILE, "r", encoding="utf-8") as f:
-                results = json.load(f)
-        except Exception:
-            st.error("last_session_results.json 格式錯誤。")
-            return
-        a_n = b_n = 0
-        for r in results:
-            if r.get("初篩判定") == "合格":
-                g = str(r.get("綜合推薦度", "")).upper()
-                if g.startswith("A"): a_n += 1
-                elif g.startswith("B"): b_n += 1
-        st.info(f"上次初篩：🏆 A 級 {a_n} 人 · ✅ B 級 {b_n} 人（共可匯入 {a_n+b_n} 人）")
-        import_job = st.selectbox("匯入至職缺", [j["title"] for j in all_jobs], key="imp_job")
-        import_jid = next((j["id"] for j in all_jobs if j["title"] == import_job), None)
-        if st.button("🔄 執行匯入", type="primary", key="do_import"):
-            if import_jid:
-                with st.spinner("匯入中…"):
-                    n = import_from_screening(results, import_jid)
-                if n > 0:
-                    st.success(f"✅ 成功匯入 {n} 位候選人！")
-                    st.rerun()
-                else:
-                    st.info("無新候選人（已全部存在或無 A/B 級）。")
 
 # ── Calendar render helpers ───────────────────────────────────
 
@@ -1908,6 +2046,51 @@ def page_analytics():
         else:
             st.info("此區間無資料。")
 
+    # ── AI 等第 vs 後續結果 交叉分析 ──────────────────────────
+    st.markdown("---")
+    st.subheader("🎯 AI 等第 vs 後續結果 交叉分析")
+    st.info(
+        "⚠️ 樣本量小、時間跨度短時，此分析僅供參考，不足以下結論；請隨資料累積持續觀察。"
+        "目前系統無離職/留任追蹤資料，本分析只到「錄取」為止，不涉及留任率。"
+    )
+
+    def _result_category(stage: str) -> str:
+        if stage == "hired":
+            return "已錄取"
+        if stage == "rejected":
+            return "已結案/淘汰"
+        if stage in ("interviewed", "offer_pending"):
+            return "已面試"
+        return "仍在流程中"
+
+    _CAT_ORDER = ["已面試", "已錄取", "已結案/淘汰", "仍在流程中"]
+    _cross = {g: {cat: 0 for cat in _CAT_ORDER} for g in ("A", "B", "C")}
+    for c in cands_f:
+        g = c.get("grade", "C")
+        if g not in _cross:
+            g = "C"
+        _cross[g][_result_category(c.get("stage", ""))] += 1
+
+    cross_df = pd.DataFrame(_cross).T[_CAT_ORDER]
+    cross_df.index.name = "AI 等第"
+    st.dataframe(cross_df, use_container_width=True)
+
+    # 有結果的樣本（已面試/已錄取/已結案，排除仍在流程中）
+    n_with_result = sum(
+        _cross[g][cat] for g in _cross for cat in _CAT_ORDER if cat != "仍在流程中"
+    )
+    if n_with_result < 30:
+        st.warning(f"目前樣本量過小（N={n_with_result} 筆有結果的應徵記錄），建議累積更多資料後再參考此分析。")
+
+    st.markdown("**各等第錄取率**（該等第已錄取人數 ÷ 該等第總人數）")
+    for g in ("A", "B", "C"):
+        total_g = sum(_cross[g].values())
+        hired_g = _cross[g]["已錄取"]
+        rate = (hired_g / total_g * 100) if total_g else 0
+        gm = GRADE_META.get(g, ("", "", "", ""))
+        st.write(f"{gm[3]} {g} 等第：{hired_g} / {total_g} = {rate:.0f}%")
+        st.progress(min(rate / 100, 1.0))
+
     # ── 匯出 Excel ────────────────────────────────────────────
     st.markdown("---")
     st.subheader("⬇ 匯出報告")
@@ -2067,6 +2250,13 @@ with st.sidebar:
     if st.button("🔄 重新整理資料", use_container_width=True):
         _invalidate()
         st.rerun()
+    if st.button("💾 備份六主檔到本機", use_container_width=True):
+        with st.spinner("備份中…"):
+            _ok, _msg = backup_sheets_to_local()
+        if _ok:
+            st.success(f"已備份六主檔到 backups/{_msg}/")
+        else:
+            st.error(f"備份失敗：{_msg}")
     st.caption(f"今天：{date.today().strftime('%Y/%m/%d')}")
 
 _PAGE_META = {

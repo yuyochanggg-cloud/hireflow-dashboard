@@ -8,17 +8,20 @@ gs_config.json
 推薦備份/
 temp_resumes/
 resume_library/
+backups/
 
 # 文件
 *.docx
 *.pptx
 *.pdf
 
-# 本機工具（不需要在 dashboard 上）
-app.py
+# 本機工具（app.py 2026-07-13 起改為要版控，移出此清單）
 sync_to_gsheet.py
 adverse_impact_audit.py
 parse_104_email.py
+
+# 廢棄檔案暫存區（無需版控）
+_archived_*/
 
 # GAS 腳本
 *.gs
