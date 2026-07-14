@@ -67,7 +67,7 @@ h3 { font-weight: 700 !important; letter-spacing: -.01em !important; }
 [data-testid="stSidebar"] h2,
 [data-testid="stSidebar"] h3 {
   color: var(--sb-text) !important;
-  font-size: 0.75rem !important;
+  font-size: var(--fs-xs) !important;
   font-weight: 700 !important;
   text-transform: uppercase !important;
   letter-spacing: .09em !important;
@@ -79,7 +79,7 @@ h3 { font-weight: 700 !important; letter-spacing: -.01em !important; }
 /* Labels */
 [data-testid="stSidebar"] label {
   color: var(--sb-muted) !important;
-  font-size: 0.75rem !important;
+  font-size: var(--fs-xs) !important;
   font-weight: 600 !important;
   text-transform: uppercase !important;
   letter-spacing: .06em !important;
@@ -196,14 +196,14 @@ h3 { font-weight: 700 !important; letter-spacing: -.01em !important; }
 
 /* Metric — 數字加粗、label 大寫細字 */
 [data-testid="stMetric"] [data-testid="stMetricValue"] {
-  font-size: 1.9rem !important;
+  font-size: var(--fs-data) !important;
   font-family: var(--font-data) !important;
   font-weight: 700 !important;
   color: var(--c-primary) !important;
   letter-spacing: -.02em !important;
 }
 [data-testid="stMetric"] label {
-  font-size: 0.7rem !important;
+  font-size: var(--fs-xs) !important;
   font-weight: 700 !important;
   text-transform: uppercase !important;
   letter-spacing: .07em !important;
@@ -218,7 +218,7 @@ h3 { font-weight: 700 !important; letter-spacing: -.01em !important; }
 }
 [data-testid="stExpander"] summary {
   font-weight: 600 !important;
-  font-size: 0.84rem !important;
+  font-size: var(--fs-sm) !important;
   color: var(--c-primary) !important;
   padding: 11px 16px !important;
   transition: background .15s ease !important;
@@ -248,7 +248,7 @@ h3 { font-weight: 700 !important; letter-spacing: -.01em !important; }
 /* Caption */
 [data-testid="stCaptionContainer"] {
   color: var(--c-text-muted) !important;
-  font-size: 0.77rem !important;
+  font-size: var(--fs-xs) !important;
 }
 
 /* Divider */
@@ -1857,7 +1857,7 @@ def render_session_stats():
     st.markdown(
         '<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;'
         'padding:8px 14px;background:#f1f5f9;border:1px solid #e2e8f0;'
-        'border-radius:8px;font-size:0.83rem;color:#0f172a;margin-bottom:10px;">'
+        'border-radius:8px;font-size:var(--fs-sm);color:#0f172a;margin-bottom:10px;">'
         + sep.join(chips)
         + '</div>',
         unsafe_allow_html=True
@@ -1892,14 +1892,14 @@ def render_pipeline_status():
             card_bg  = "var(--c-surface)"
             txt_col  = "var(--c-text)"
             dot      = f'<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--c-ok);margin-right:5px;vertical-align:middle;"></span>'
-            status   = f'{dot}<span style="color:var(--c-ok);font-size:0.72rem;font-weight:600;">完成</span>'
+            status   = f'{dot}<span style="color:var(--c-ok);font-size:var(--fs-xs);font-weight:600;">完成</span>'
         elif state == 'running':
             ring_bg  = "var(--c-accent)"
             ring_txt = "#fff"
             card_bg  = "#eff9ff"
             txt_col  = "var(--c-text)"
             dot      = f'<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--c-accent);margin-right:5px;vertical-align:middle;"></span>'
-            status   = f'{dot}<span style="color:var(--c-accent-dark);font-size:0.72rem;font-weight:600;">進行中</span>'
+            status   = f'{dot}<span style="color:var(--c-accent-dark);font-size:var(--fs-xs);font-weight:600;">進行中</span>'
         else:
             ring_bg  = "var(--c-border)"
             ring_txt = "var(--c-text-muted)"
@@ -1908,12 +1908,12 @@ def render_pipeline_status():
             status   = ""
 
         dur_html = (
-            f'<span style="font-family:var(--font-data);font-size:0.72rem;'
+            f'<span style="font-family:var(--font-data);font-size:var(--fs-xs);'
             f'color:var(--c-text-muted);margin-left:6px;">{format_dur(secs)}</span>'
         ) if secs is not None else ""
 
         det_html = (
-            f'<div style="font-size:0.78rem;color:var(--c-text-muted);margin-top:2px;">{detail}</div>'
+            f'<div style="font-size:var(--fs-xs);color:var(--c-text-muted);margin-top:2px;">{detail}</div>'
         ) if detail else ""
 
         return f'''
@@ -1922,17 +1922,17 @@ def render_pipeline_status():
             box-shadow:var(--shadow-sm);">
   <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
     <div style="width:22px;height:22px;border-radius:50%;background:{ring_bg};
-                color:{ring_txt};font-size:0.7rem;font-weight:700;
+                color:{ring_txt};font-size:var(--fs-xs);font-weight:700;
                 display:flex;align-items:center;justify-content:center;
                 flex-shrink:0;">{num}</div>
-    <span style="font-weight:700;color:{txt_col};font-size:0.88rem;">{label}</span>
+    <span style="font-weight:700;color:{txt_col};font-size:var(--fs-sm);">{label}</span>
     {dur_html}
   </div>
   {det_html}
   <div style="margin-top:4px;">{status}</div>
 </div>'''
 
-    arrow = '<div style="display:flex;align-items:center;color:var(--c-border);font-size:1.4rem;padding:0 4px;flex-shrink:0;">›</div>'
+    arrow = '<div style="display:flex;align-items:center;color:var(--c-border);font-size:var(--fs-xl);padding:0 4px;flex-shrink:0;">›</div>'
 
     _screening_active = st.session_state.get('analysis_in_progress') or stats.get('screen_secs') is not None
 
@@ -2170,7 +2170,7 @@ def render_home_page():
 
             _r1, _r2, _r3, _r4, _r5, _r6, _r7 = st.columns([3.2, 0.9, 1, 1, 1.3, 1.1, 0.6])
             _r1.markdown(
-                f'<div style="font-weight:800;font-size:1.4rem;color:#0f172a;line-height:1.3;">'
+                f'<div style="font-weight:800;font-size:var(--fs-xl);color:#0f172a;line-height:1.3;">'
                 f'{_html_module.escape(lib["jd_name"])}</div>',
                 unsafe_allow_html=True,
             )
@@ -2190,7 +2190,7 @@ def render_home_page():
                     unsafe_allow_html=True,
                 )
             _r5.markdown(
-                f'<div style="padding-top:10px;font-size:0.78rem;color:#94a3b8;">🕐 {lib["last_updated"]}</div>',
+                f'<div style="padding-top:10px;font-size:var(--fs-xs);color:#94a3b8;">🕐 {lib["last_updated"]}</div>',
                 unsafe_allow_html=True,
             )
             if _r6.button("進入 →", key=f"home_open_{idx}", use_container_width=True, type="secondary"):
@@ -2218,7 +2218,7 @@ def render_home_page():
                 _cc1, _cc2, _cc3 = st.columns([4, 1.2, 1.2])
                 _cc1.markdown(
                     f'<div style="padding-top:6px;">📁 <b>{_html_module.escape(lib["jd_name"])}</b>'
-                    f'　<span style="color:#64748b;font-size:0.82rem;">'
+                    f'　<span style="color:#64748b;font-size:var(--fs-sm);">'
                     f'{lib["total"]} 人・合格 {lib["qualified"]}・最後更新 {lib["last_updated"]}</span></div>',
                     unsafe_allow_html=True,
                 )
@@ -3380,7 +3380,7 @@ def _render_results():
         with _hdr_col2:
             _count_color = '#1e40af' if _sel_count else '#94a3b8'
             st.markdown(
-                f'<div style="font-size:0.85rem;color:{_count_color};font-weight:700;'
+                f'<div style="font-size:var(--fs-sm);color:{_count_color};font-weight:700;'
                 f'padding-top:6px;">📧 已勾選推薦：{_sel_count} 人</div>',
                 unsafe_allow_html=True
             )
@@ -3443,7 +3443,7 @@ def _render_results():
                     _rec_entries = _recommended_lookup.get(str(row.get('真實姓名', '')), [])
                     if _rec_entries:
                         _badge_html_parts = ''.join(
-                            f'<span style="display:inline-block;font-size:0.72rem;'
+                            f'<span style="display:inline-block;font-size:var(--fs-xs);'
                             f'background:#f0fdf4;color:#15803d;'
                             f'border:1px solid #86efac;border-radius:4px;'
                             f'padding:2px 10px;margin-right:6px;font-weight:600;">'
@@ -3463,23 +3463,23 @@ def _render_results():
       <!-- Grade 徽章 -->
       <div style="background:{_gs['bg']};color:{_gs['color']};
                   border:{_gs['border']};
-                  font-family:var(--font-data);font-weight:800;font-size:1.05rem;
+                  font-family:var(--font-data);font-weight:800;font-size:var(--fs-base);
                   padding:3px 13px;border-radius:6px;letter-spacing:.05em;white-space:nowrap;">
         {_gs['icon']} {grade_letter}{f'　{wscore}' if wscore and wscore not in ('nan', 'None', '') else ''}
       </div>
       <!-- 姓名 -->
-      <span style="font-size:1.18rem;font-weight:800;color:var(--c-text);letter-spacing:-.01em;">{name}</span>
+      <span style="font-size:var(--fs-lg);font-weight:800;color:var(--c-text);letter-spacing:-.01em;">{name}</span>
       <!-- 代碼 -->
-      <span style="font-family:var(--font-data);font-size:0.76rem;color:var(--c-text-muted);
+      <span style="font-family:var(--font-data);font-size:var(--fs-xs);color:var(--c-text-muted);
                    background:var(--c-surface-2);padding:2px 8px;border-radius:4px;
                    border:1px solid var(--c-border);">#{code}</span>
       <!-- 穩定度 -->
-      <span style="font-size:0.76rem;background:{stab_cfg[0]};color:{stab_cfg[1]};
+      <span style="font-size:var(--fs-xs);background:{stab_cfg[0]};color:{stab_cfg[1]};
                    padding:2px 9px;border-radius:4px;font-weight:700;">
         穩定度：{_html_module.escape(stab)}
       </span>
     </div>
-    <div style="font-size:0.79rem;color:var(--c-text-muted);margin-top:5px;">
+    <div style="font-size:var(--fs-xs);color:var(--c-text-muted);margin-top:5px;">
       📍 {residence}　·　{commute}
     </div>
   </div>
@@ -3502,7 +3502,7 @@ def _render_results():
                     _cand_code    = _html_module.escape(str(row.get('104代碼', '?')))
                     _raw_name     = _html_module.escape(str(row.get('真實姓名', '?')))
                     st.markdown(
-                        f'<div style="font-size:11px;color:#718096;line-height:1.6;'
+                        f'<div style="font-size:var(--fs-xs);color:#718096;line-height:1.6;'
                         f'background:#f7fafc;border-left:3px solid #cbd5e0;'
                         f'padding:6px 10px;border-radius:0 4px 4px 0;margin-bottom:8px;">'
                         f'📂 {_src_basename}&nbsp;&nbsp;｜&nbsp;&nbsp;'
@@ -3610,12 +3610,12 @@ def _render_results():
                             months  = _html_module.escape(str(exp.get('月數', '')))
                             exp_rows += (
                                 f'<div style="margin-bottom:5px;line-height:1.5;">'
-                                f'<code style="font-family:var(--font-data);font-size:0.72rem;'
+                                f'<code style="font-family:var(--font-data);font-size:var(--fs-xs);'
                                 f'color:var(--c-text-muted);background:var(--c-surface-2);'
                                 f'padding:1px 5px;border-radius:3px;">{period}</code> '
                                 f'<b style="color:var(--c-text);">{company}</b> '
                                 f'<span style="color:var(--c-text-muted);">{title}</span> '
-                                f'<span style="font-family:var(--font-data);font-size:0.72rem;'
+                                f'<span style="font-family:var(--font-data);font-size:var(--fs-xs);'
                                 f'color:var(--c-text-muted);">({months}月)</span>'
                                 f'</div>'
                             )
@@ -3631,14 +3631,14 @@ def _render_results():
                             gap_badge = (
                                 f'<div style="margin-top:6px;display:inline-flex;align-items:center;gap:4px;'
                                 f'background:var(--c-warn-bg);border:1px solid var(--c-warn-border);'
-                                f'border-radius:4px;padding:2px 8px;font-size:0.76rem;color:var(--c-warn);">'
+                                f'border-radius:4px;padding:2px 8px;font-size:var(--fs-xs);color:var(--c-warn);">'
                                 f'⚠️ 空窗期 {_html_module.escape(str(gap))}</div>'
                             )
 
                     st.markdown(
-                        f'<div style="font-size:0.82rem;line-height:1.6;font-family:var(--font-ui);">'
+                        f'<div style="font-size:var(--fs-sm);line-height:1.6;font-family:var(--font-ui);">'
                         f'<div style="font-weight:700;color:var(--c-primary);margin-bottom:7px;'
-                        f'font-size:0.78rem;text-transform:uppercase;letter-spacing:.05em;">📋 近期工作軌跡</div>'
+                        f'font-size:var(--fs-xs);text-transform:uppercase;letter-spacing:.05em;">📋 近期工作軌跡</div>'
                         f'{exp_rows}{gap_badge}'
                         f'</div>',
                         unsafe_allow_html=True
@@ -3663,15 +3663,15 @@ def _render_results():
                                 f'<div style="margin-bottom:9px;">'
                                 f'<div style="display:flex;justify-content:space-between;'
                                 f'align-items:baseline;margin-bottom:3px;">'
-                                f'<span style="font-size:0.8rem;font-weight:600;color:var(--c-text);">{dim}</span>'
-                                f'<code style="font-family:var(--font-data);font-size:0.76rem;'
+                                f'<span style="font-size:var(--fs-sm);font-weight:600;color:var(--c-text);">{dim}</span>'
+                                f'<code style="font-family:var(--font-data);font-size:var(--fs-xs);'
                                 f'font-variant-numeric:tabular-nums;color:var(--c-text-muted);">{score}/10</code>'
                                 f'</div>'
                                 f'<div style="background:var(--c-surface-2);border-radius:3px;height:5px;">'
                                 f'<div style="background:{bar_c};width:{pct}%;height:100%;border-radius:3px;'
                                 f'transition:width .3s ease;"></div>'
                                 f'</div>'
-                                + (f'<div style="font-size:0.72rem;color:var(--c-text-muted);margin-top:3px;'
+                                + (f'<div style="font-size:var(--fs-xs);color:var(--c-text-muted);margin-top:3px;'
                                    f'line-height:1.4;">↳ {reason}</div>' if reason else '')
                                 + '</div>'
                             )
@@ -3679,9 +3679,9 @@ def _render_results():
                         dim_rows = '<div style="color:var(--c-text-muted);font-style:italic;">無維度資料</div>'
 
                     st.markdown(
-                        f'<div style="font-size:0.82rem;line-height:1.5;font-family:var(--font-ui);">'
+                        f'<div style="font-size:var(--fs-sm);line-height:1.5;font-family:var(--font-ui);">'
                         f'<div style="font-weight:700;color:var(--c-primary);margin-bottom:7px;'
-                        f'font-size:0.78rem;text-transform:uppercase;letter-spacing:.05em;">📊 維度評分</div>'
+                        f'font-size:var(--fs-xs);text-transform:uppercase;letter-spacing:.05em;">📊 維度評分</div>'
                         f'{dim_rows}'
                         f'</div>',
                         unsafe_allow_html=True
@@ -3694,15 +3694,15 @@ def _render_results():
                 cons = _html_module.escape(_cons_raw if _cons_raw.lower() not in ('nan','none','null','') else '無')
                 st.markdown(
                     f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;'
-                    f'font-size:0.82rem;margin-top:6px;font-family:var(--font-ui);">'
+                    f'font-size:var(--fs-sm);margin-top:6px;font-family:var(--font-ui);">'
                     f'<div style="background:var(--c-ok-bg);border:1px solid var(--c-ok-border);'
                     f'border-radius:6px;padding:8px 10px;">'
-                    f'<div style="font-weight:700;color:var(--c-ok);font-size:0.76rem;'
+                    f'<div style="font-weight:700;color:var(--c-ok);font-size:var(--fs-xs);'
                     f'text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;">✨ 戰功亮點</div>'
                     f'<div style="color:var(--c-text);line-height:1.5;">{pros}</div></div>'
                     f'<div style="background:var(--c-err-bg);border:1px solid var(--c-err-border);'
                     f'border-radius:6px;padding:8px 10px;">'
-                    f'<div style="font-weight:700;color:var(--c-err);font-size:0.76rem;'
+                    f'<div style="font-weight:700;color:var(--c-err);font-size:var(--fs-xs);'
                     f'text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;">⚠️ 缺口地雷</div>'
                     f'<div style="color:var(--c-text);line-height:1.5;">{cons}</div></div>'
                     f'</div>',
@@ -3714,7 +3714,7 @@ def _render_results():
                 if _future_fit and _future_fit not in ('nan', 'None', '適配本職缺'):
                     st.markdown(
                         f'<div style="margin-top:8px;background:#f5f3ff;border:1px solid #c4b5fd;'
-                        f'border-radius:6px;padding:8px 10px;font-size:0.82rem;">'
+                        f'border-radius:6px;padding:8px 10px;font-size:var(--fs-sm);">'
                         f'<b style="color:#6d28d9;">🔭 未來適配</b>　'
                         f'<span style="color:var(--c-text);">{_html_module.escape(_future_fit)}</span></div>',
                         unsafe_allow_html=True
@@ -3905,20 +3905,20 @@ def _render_results():
   <div style="flex:1;padding:12px 16px 8px 14px;">
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
       <div style="background:{_pc_gs['bg']};color:{_pc_gs['color']};border:{_pc_gs['border']};
-                  font-family:var(--font-data);font-weight:800;font-size:1.05rem;
+                  font-family:var(--font-data);font-weight:800;font-size:var(--fs-base);
                   padding:3px 13px;border-radius:6px;letter-spacing:.05em;white-space:nowrap;">
         {_pc_gs['icon']} C
       </div>
-      <span style="font-size:1.18rem;font-weight:800;color:var(--c-text);letter-spacing:-.01em;">{_pc_name}</span>
-      <span style="font-family:var(--font-data);font-size:0.76rem;color:var(--c-text-muted);
+      <span style="font-size:var(--fs-lg);font-weight:800;color:var(--c-text);letter-spacing:-.01em;">{_pc_name}</span>
+      <span style="font-family:var(--font-data);font-size:var(--fs-xs);color:var(--c-text-muted);
                    background:var(--c-surface-2);padding:2px 8px;border-radius:4px;
                    border:1px solid var(--c-border);">#{_pc_code}</span>
-      <span style="font-size:0.76rem;background:{_pc_stab_cfg[0]};color:{_pc_stab_cfg[1]};
+      <span style="font-size:var(--fs-xs);background:{_pc_stab_cfg[0]};color:{_pc_stab_cfg[1]};
                    padding:2px 9px;border-radius:4px;font-weight:700;">穩定度：{_html_module.escape(_pc_stab)}</span>
-      <span style="font-size:0.72rem;background:#fef2f2;color:#991b1b;border:1px solid #fecaca;
+      <span style="font-size:var(--fs-xs);background:#fef2f2;color:#991b1b;border:1px solid #fecaca;
                    border-radius:4px;padding:2px 9px;font-weight:700;">🏁 人工拉上來覆核</span>
     </div>
-    <div style="font-size:0.79rem;color:var(--c-text-muted);margin-top:5px;">
+    <div style="font-size:var(--fs-xs);color:var(--c-text-muted);margin-top:5px;">
       📍 {_html_module.escape(_s2(_pc.get('居住地'), '未知'))}　·　{_html_module.escape(_s2(_pc.get('通勤評估'), '未知'))}
     </div>
   </div>
@@ -4171,9 +4171,9 @@ with _tab_log:
             st.markdown(
                 f'<div style="border-left:3px solid #4a90d9;padding:6px 12px;margin-bottom:8px;'
                 f'background:#f0f6ff;border-radius:0 6px 6px 0;">'
-                f'<span style="font-size:11px;color:#718096;">{_log.get("sent_at","")}</span><br>'
+                f'<span style="font-size:var(--fs-xs);color:#718096;">{_log.get("sent_at","")}</span><br>'
                 f'<b>{_html_module.escape(_log.get("job_name",""))}</b> → {_html_module.escape(_log.get("recipient_name",""))}<br>'
-                f'<span style="font-size:12px;color:#4a5568;">候選人：{_html_module.escape(_cand_str)}（共 {_log.get("count",0)} 份）</span>'
+                f'<span style="font-size:var(--fs-xs);color:#4a5568;">候選人：{_html_module.escape(_cand_str)}（共 {_log.get("count",0)} 份）</span>'
                 f'</div>',
                 unsafe_allow_html=True
             )
@@ -4212,13 +4212,13 @@ with _tab_dashboard:
                 _jc1, _jc2 = st.columns([3, 1])
                 with _jc1:
                     st.markdown(
-                        f'<span style="font-size:1.05rem;font-weight:800;">{_html_module.escape(_jname)}</span>'
-                        f'&nbsp;&nbsp;<span style="font-size:0.78rem;color:#718096;">最後寄出：{_last_sent[:10]}</span>',
+                        f'<span style="font-size:var(--fs-base);font-weight:800;">{_html_module.escape(_jname)}</span>'
+                        f'&nbsp;&nbsp;<span style="font-size:var(--fs-xs);color:#718096;">最後寄出：{_last_sent[:10]}</span>',
                         unsafe_allow_html=True
                     )
                 with _jc2:
                     st.markdown(
-                        f'<div style="text-align:right;font-size:0.85rem;color:#1e40af;font-weight:700;">'
+                        f'<div style="text-align:right;font-size:var(--fs-sm);color:#1e40af;font-weight:700;">'
                         f'已推薦 {len(_job_cands_set)} 人 · {len(_job_entries)} 次</div>',
                         unsafe_allow_html=True
                     )
@@ -4226,7 +4226,7 @@ with _tab_dashboard:
                 _chips_html = "".join(
                     f'<span style="display:inline-block;background:#eff6ff;color:#1e40af;'
                     f'border:1px solid #bfdbfe;border-radius:999px;'
-                    f'padding:2px 12px;margin:3px 4px 3px 0;font-size:0.8rem;font-weight:600;">'
+                    f'padding:2px 12px;margin:3px 4px 3px 0;font-size:var(--fs-sm);font-weight:600;">'
                     f'{_html_module.escape(_c)}</span>'
                     for _c in _job_cands_set
                 )

@@ -56,14 +56,29 @@ TOKENS_CSS = """
   --font-ui:   "Plus Jakarta Sans", "Noto Sans TC", "Microsoft JhengHei", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   --font-data: "JetBrains Mono", "SF Mono", ui-monospace, monospace;
 
-  /* Type scale：新寫的CSS請用這幾級，不要再現場發明px/rem值 */
+  /* Type scale：新寫的CSS請用這幾級，不要再現場發明px/rem值。
+     --fs-2xs 僅限高密度圖表內部標籤（週曆/月曆/甘特），一般UI禁用。
+     按鈕文字用 --fs-sm，不是 --fs-base（0.875rem跟0.85rem的差人眼分不出來，
+     不留特例）。 */
+  --fs-2xs:  0.65rem;
   --fs-xs:   0.75rem;
   --fs-sm:   0.85rem;
   --fs-base: 1rem;
   --fs-lg:   1.15rem;
   --fs-xl:   1.4rem;
   --fs-2xl:  1.75rem;
+  /* KPI大數字專用：例外於type scale的等比級距，但仍是單一權威token，
+     不得在呼叫端另外寫死數字。搭配 --font-data 使用。 */
+  --fs-data: 2rem;
 }
+
+/* 標題階層：app.py跟dashboard.py共用，不再各自宣告一套不同大小 */
+h1 { font-size: var(--fs-2xl) !important; }
+h2 { font-size: var(--fs-xl) !important; }
+h3 { font-size: var(--fs-lg) !important; }
+
+/* 按鈕文字統一走 --fs-sm */
+[data-testid="stButton"] button { font-size: var(--fs-sm) !important; }
 </style>
 """
 
