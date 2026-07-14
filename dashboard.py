@@ -602,7 +602,7 @@ def fetch_all_hires() -> list:
             "job_id":          row.get("job_id", ""),
             "start_date":      row.get("預計報到日", ""),
             "employment_type": "全職",
-            "proposed_salary": None,
+            "proposed_salary": row.get("薪資（月）", "") or None,
             # 06_員工主檔 checklist 欄位直接用中文 key
             "錄取通知寄出":    row.get("錄取通知寄出", ""),
             "銀行帳號已收":    row.get("銀行帳號已收", ""),
@@ -614,6 +614,11 @@ def fetch_all_hires() -> list:
             "飛騰帳號":        row.get("飛騰帳號", ""),
             "門禁卡":          row.get("門禁卡", ""),
             "雲端學院帳號":    row.get("雲端學院帳號", ""),
+            # 招募→留任回饋迴路（E）：日後回頭檢視AI評分準不準用
+            "三個月考核結果":  row.get("三個月考核結果", ""),
+            "試用期通過":      row.get("試用期通過", ""),
+            "離職日":          row.get("離職日", ""),
+            "離職原因類別":    row.get("離職原因類別", ""),
         })
     return result
 
@@ -782,6 +787,7 @@ def save_hire(data: dict) -> bool:
             "candidate_id":   cid,
             "job_id":         data.get("job_id", data.get("job_opening_id", "")),
             "預計報到日":     str(data.get("start_date", "")),
+            "薪資（月）":     str(data.get("proposed_salary", "") or ""),
             "錄取通知寄出":   _b(data.get("錄取通知寄出", "")),
             "銀行帳號已收":   _b(data.get("銀行帳號已收", "")),
             "報到前Form已填": _b(data.get("報到前Form已填", "")),
@@ -792,6 +798,10 @@ def save_hire(data: dict) -> bool:
             "飛騰帳號":       _b(data.get("飛騰帳號", "")),
             "門禁卡":         _b(data.get("門禁卡", "")),
             "雲端學院帳號":   _b(data.get("雲端學院帳號", "")),
+            "三個月考核結果": str(data.get("三個月考核結果", "") or ""),
+            "試用期通過":     str(data.get("試用期通過", "") or ""),
+            "離職日":         str(data.get("離職日", "") or ""),
+            "離職原因類別":   str(data.get("離職原因類別", "") or ""),
         }
         _upsert_row(ws, "candidate_id", row_data)
         _invalidate()
@@ -1896,6 +1906,51 @@ def page_onboarding():
                         "start_date":      start_date.isoformat(),
                     })
                     if save_hire(new_h2):
+                        st.success("✅ 已儲存！")
+                        st.rerun()
+
+            # 留任 / 考核追蹤：招募→留任回饋迴路（E），日後才能回頭檢視
+            # AI評分準不準、哪個評分維度真的預測留任——樣本要到職滿三個月
+            # 以上才有意義，所以現在就要開始留存，即使暫時還沒有分析工具。
+            with st.expander("🎯 留任 / 考核追蹤", expanded=False):
+                _RETAIN_EVAL  = ["尚未到期", "通過", "不通過", "待觀察"]
+                _PROBATION    = ["待定", "通過", "不通過"]
+                _LEAVE_REASON = ["", "自願離職", "資遣", "試用期未過", "其他"]
+                rc1, rc2 = st.columns(2)
+                eval_result = rc1.selectbox(
+                    "三個月考核結果", _RETAIN_EVAL,
+                    index=_RETAIN_EVAL.index(h.get("三個月考核結果"))
+                    if h.get("三個月考核結果") in _RETAIN_EVAL else 0,
+                    key=f"ob_eval_{cid}")
+                probation = rc2.selectbox(
+                    "試用期通過", _PROBATION,
+                    index=_PROBATION.index(h.get("試用期通過"))
+                    if h.get("試用期通過") in _PROBATION else 0,
+                    key=f"ob_prob_{cid}")
+                rc3, rc4 = st.columns(2)
+                _leave_val = None
+                if h.get("離職日"):
+                    try:
+                        _leave_val = date.fromisoformat(str(h["離職日"])[:10])
+                    except Exception:
+                        pass
+                leave_date = rc3.date_input("離職日（未離職留空）", value=_leave_val,
+                                            key=f"ob_leave_{cid}")
+                leave_reason = rc4.selectbox(
+                    "離職原因類別", _LEAVE_REASON,
+                    index=_LEAVE_REASON.index(h.get("離職原因類別"))
+                    if h.get("離職原因類別") in _LEAVE_REASON else 0,
+                    key=f"ob_leavereason_{cid}")
+                if st.button("儲存留任追蹤資訊", key=f"ob_retain_save_{cid}"):
+                    new_h3 = dict(h)
+                    new_h3.update({
+                        "candidate_id":   cid,
+                        "三個月考核結果": eval_result,
+                        "試用期通過":     probation,
+                        "離職日":         leave_date.isoformat() if leave_date else "",
+                        "離職原因類別":   leave_reason,
+                    })
+                    if save_hire(new_h3):
                         st.success("✅ 已儲存！")
                         st.rerun()
 

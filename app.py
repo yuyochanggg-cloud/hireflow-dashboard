@@ -428,9 +428,12 @@ def resolve_jd_name():
         or st.session_state.get('jd_selector', '')
     )
 
-def save_jd_profile(job_name, loc, must_have, nice_to_have, dimensions):
+def save_jd_profile(job_name, loc, must_have, nice_to_have, dimensions, keywords_104="", raw_jd=""):
     profiles = load_jd_profiles()
-    profiles[job_name] = {"location": loc, "must": must_have, "nice": nice_to_have, "dimensions": dimensions}
+    profiles[job_name] = {
+        "location": loc, "must": must_have, "nice": nice_to_have, "dimensions": dimensions,
+        "keywords_104": keywords_104, "raw_jd": raw_jd,
+    }
     with open(JD_DB_FILE, "w", encoding="utf-8") as f:
         json.dump(profiles, f, ensure_ascii=False, indent=4)
     load_jd_profiles.clear()
@@ -665,7 +668,10 @@ def merge_into_library(jd_name, new_results, overwrite=False):
         if code and code in existing_map:
             if overwrite:
                 r.setdefault('篩選日期', today_str)
-                existing[existing_map[code]] = r
+                # 重新評分只覆蓋 AI 計算出的欄位，保留舊記錄裡 AI 結果不包含的欄位
+                # （人才狀態/下次聯繫日/薪資期待/可到職日等 HR 手動填寫的資料），
+                # 避免整筆取代把這些人工資訊洗掉。
+                existing[existing_map[code]] = {**existing[existing_map[code]], **r}
         elif code:
             r.setdefault('篩選日期', today_str)
             existing.append(r)
@@ -1146,7 +1152,10 @@ def send_recommendation_email(to_email, body_text, selected_candidates, job_name
         code_val  = str(cand.get('104代碼', ''))
         _raw_name = re.sub(r'[\\/:*?"<>|]', '', str(cand.get('真實姓名', '履歷')))
         _safe_jd  = re.sub(r'[\\/:*?"<>|]', '', str(job_name))
+        _safe_src = re.sub(r'[\\/:*?"<>|]', '', str(cand.get('應徵來源', '') or ''))
         name_val  = f"{_raw_name}_{_safe_jd}" if _safe_jd else _raw_name
+        if _safe_src:
+            name_val = f"{name_val}_{_safe_src}"
         pdf_bytes, _ = extract_candidate_pdf(src_file, code_val)
         if pdf_bytes:
             part = MIMEBase('application', 'pdf')
@@ -1186,7 +1195,9 @@ def backup_recommended_pdfs(job_name, selected_candidates):
         pdf_bytes, _ = extract_candidate_pdf(src_file, code_val)
         if pdf_bytes:
             _raw_name = re.sub(r'[\\/:*?"<>|]', '', str(cand.get('真實姓名', '履歷')))
-            _dest_path = os.path.join(_dest_dir, f"{_raw_name}.pdf")
+            _safe_src = re.sub(r'[\\/:*?"<>|]', '', str(cand.get('應徵來源', '') or ''))
+            _bk_name  = f"{_raw_name}_{_safe_src}" if _safe_src else _raw_name
+            _dest_path = os.path.join(_dest_dir, f"{_bk_name}.pdf")
             with open(_dest_path, 'wb') as _bf:
                 _bf.write(pdf_bytes)
             saved += 1
@@ -1953,6 +1964,8 @@ def _enter_job_from_library(jd_name):
         st.session_state['must_input']         = _jd.get('must', '')
         st.session_state['nice_input']         = _jd.get('nice', '')
         st.session_state['current_dimensions'] = _jd.get('dimensions', [])
+        st.session_state['ai_keywords_104']    = _jd.get('keywords_104', '')
+        st.session_state['raw_jd_text_saved']  = _jd.get('raw_jd', '')
 
 def render_home_page():
     """首頁：職缺卡片牆"""
@@ -1977,7 +1990,8 @@ def render_home_page():
             # 使用者若忘記重新貼 JD 跑一次「JD 動態建模」，新職缺會沿用舊條件，
             # 導致 criteria_hash 相同、快取誤命中，看起來像舊職缺的候選人分數被灌進新職缺。
             for _jd_key in ('must_input', 'nice_input', 'current_dimensions',
-                            'ai_keywords_104', 'jd_compliance_flags', '_target_jd_name'):
+                            'ai_keywords_104', 'jd_compliance_flags', '_target_jd_name',
+                            'raw_jd_text_saved'):
                 st.session_state.pop(_jd_key, None)
             st.session_state['loc_input'] = "新莊區"
             st.session_state['current_dimensions'] = []
@@ -2207,6 +2221,8 @@ if st.session_state.get('_pending_saved_results') and not st.session_state.get('
                 st.session_state['must_input']         = _jd.get('must', '')
                 st.session_state['nice_input']         = _jd.get('nice', '')
                 st.session_state['current_dimensions'] = _jd.get('dimensions', [])
+                st.session_state['ai_keywords_104']    = _jd.get('keywords_104', '')
+                st.session_state['raw_jd_text_saved']  = _jd.get('raw_jd', '')
         st.rerun()
 
 # ==========================================
@@ -2254,11 +2270,15 @@ with st.sidebar:
             st.session_state['must_input'] = jd_db[selected].get("must", "")
             st.session_state['nice_input'] = jd_db[selected].get("nice", "")
             st.session_state['current_dimensions'] = jd_db[selected].get("dimensions", [])
+            st.session_state['ai_keywords_104'] = jd_db[selected].get("keywords_104", "")
+            st.session_state['raw_jd_text_saved'] = jd_db[selected].get("raw_jd", "")
         else:
             st.session_state['loc_input'] = "新莊區"
             st.session_state['must_input'] = ""
             st.session_state['nice_input'] = ""
             st.session_state['current_dimensions'] = []
+            st.session_state['ai_keywords_104'] = ""
+            st.session_state['raw_jd_text_saved'] = ""
 
     selected_jd = st.selectbox("選擇招募專案", options, key="jd_selector", on_change=on_jd_change)
 
@@ -2271,7 +2291,8 @@ with st.sidebar:
     # 不要再直接讀 jd_selector，否則新職缺會被存成「➕新增自訂職缺.json」。
     st.session_state['_target_jd_name'] = target_jd_name
 
-    raw_jd_text = st.text_area("貼上主管 JD，AI 將萃取核心維度與 104 關鍵字", height=100)
+    raw_jd_text = st.text_area("貼上主管 JD，AI 將萃取核心維度與 104 關鍵字", height=100,
+                                key="raw_jd_text_saved")
 
     if st.button("✨ 啟動 JD 動態建模"):
         if raw_jd_text and _api_key_valid:
@@ -2341,7 +2362,9 @@ with st.sidebar:
                     st.session_state['loc_input'],
                     st.session_state['must_input'],
                     st.session_state['nice_input'],
-                    st.session_state['current_dimensions']
+                    st.session_state['current_dimensions'],
+                    st.session_state.get('ai_keywords_104', ''),
+                    st.session_state.get('raw_jd_text_saved', '')
                 )
                 st.success("✅ 儲存成功！")
             if _ovc2.button("取消", key="jd_overwrite_no", width='stretch'):
@@ -2353,7 +2376,9 @@ with st.sidebar:
                     st.session_state['loc_input'],
                     st.session_state['must_input'],
                     st.session_state['nice_input'],
-                    st.session_state['current_dimensions']
+                    st.session_state['current_dimensions'],
+                    st.session_state.get('ai_keywords_104', ''),
+                    st.session_state.get('raw_jd_text_saved', '')
                 )
                 st.success("✅ 儲存成功！")
             else:
@@ -2604,6 +2629,23 @@ with st.sidebar:
 # ==========================================
 st.header("📥 Stage 2: 匯入履歷與自動篩選 (極速海選模式)")
 
+with st.expander("📄 本次 JD 原文與評分標準", expanded=False):
+    _disp_must = st.session_state.get('must_input', '').strip()
+    _disp_nice = st.session_state.get('nice_input', '').strip()
+    _disp_loc  = st.session_state.get('loc_input', '').strip()
+    _disp_dims = st.session_state.get('current_dimensions', [])
+    _disp_raw  = st.session_state.get('raw_jd_text_saved', '').strip()
+    st.caption(f"📍 工作地點：{_disp_loc or '（未設定）'}")
+    st.markdown(f"**🎯 絕對門檻**\n\n{_disp_must or '（未設定）'}")
+    st.markdown(f"**🌟 加分條件**\n\n{_disp_nice or '（未設定）'}")
+    if _disp_dims:
+        st.markdown("**🧠 評分維度**")
+        for d in _disp_dims:
+            st.write(f"- {d['dimension']}（權重：{d['weight']}）")
+    st.divider()
+    st.markdown("**📋 JD 原文**")
+    st.text(_disp_raw or "（尚未貼上 JD 或尚未儲存職缺模型）")
+
 _col_upload, _col_source = st.columns([3, 1])
 with _col_upload:
     uploaded_files = st.file_uploader("匯入 104 履歷 PDF", type=["pdf"], accept_multiple_files=True)
@@ -2822,6 +2864,9 @@ if start_btn or resume_btn or _auto_resume:
         _audit_age = int(_age_m.group(1)) if _age_m else None
         _gender_m = re.search(r'(?<!\w)([男女])(?!\w)', norm_text)
         _audit_gender = _gender_m.group(1) if _gender_m else None
+        # 遮蔽前直接從原文擷取 Email，供內部 Sheet 流程狀態同步用（不送 AI，AI 看到的仍是遮蔽版）
+        _email_m = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', batch_text)
+        _cand_email = _email_m.group(0) if _email_m else ''
         code_match = re.search(r'代碼:\s*(\d+)', batch_text)
         code = code_match.group(1) if code_match else "未知代碼"
         res_match = re.search(r'居\s*住\s*地\s*[:：]\s*([^\n]+)', batch_text)
@@ -2927,6 +2972,7 @@ if start_btn or resume_btn or _auto_resume:
         data.update({
             "真實姓名": real_name, "104代碼": code, "來源檔案": file_name,
             "應徵來源": st.session_state.get('screening_source', '未指定'),
+            "Email": _cand_email,
         })
         if _seg_idx is not None:
             data["pdf_segment_index"] = _seg_idx
@@ -3738,7 +3784,9 @@ def _render_results():
                 if str(r.get('104代碼', '')) in _promoted_codes
                 and str(r.get('104代碼', '')) not in _sel_codes
             ]
-            _sel_candidates = _sel_candidates + _promoted_candidates
+            # 拉上來後預設納入推薦，但每張卡都要有獨立的「要不要」勾選框，
+            # 讓 HR 看完字卡內容後可以個別取消，不必回頭去改多選框。
+            _rej_persist = st.session_state.setdefault('_rej_email_sel_store', {})
 
             # 拉上來的人不只是加進推薦名單，也要能像合格候選人一樣「看得到」——
             # 給一張精簡字卡（判定理由/穩定度/戰功亮點/缺口/未來適配建議）＋原始PDF，
@@ -3764,6 +3812,11 @@ def _render_results():
                 _pc_stab = _s2(_pc.get('穩定度評估'), '未知')
                 _pc_stab_cfg = _pc_stab_cfg_map.get(_pc_stab, ('var(--c-surface-2)', 'var(--c-text-muted)'))
                 with st.container(border=True):
+                    _pc_cur_sel = st.checkbox(
+                        "📧 納入本次推薦", key=f"rej_email_sel_{_pc_code}",
+                        value=_rej_persist.get(_pc_code, True),
+                    )
+                    _rej_persist[_pc_code] = _pc_cur_sel
                     st.markdown(f'''
 <div style="display:flex;align-items:stretch;gap:0;margin:-16px -16px 10px -16px;overflow:hidden;border-radius:8px 8px 0 0;">
   <div style="width:5px;flex-shrink:0;background:{_pc_gs['accent']};border-radius:8px 0 0 0;"></div>
@@ -3869,6 +3922,11 @@ def _render_results():
                             st.toast(f"✅ 已更新 {_pc.get('真實姓名','')} 的人才庫狀態")
                             st.rerun()
 
+            _sel_candidates = _sel_candidates + [
+                pc for pc in _promoted_candidates
+                if _rej_persist.get(str(pc.get('104代碼', '')), True)
+            ]
+
         with st.expander(f"📧 推薦給用人主管（已選 {len(_sel_candidates)} 位）", expanded=bool(_sel_candidates)):
             if not _sel_candidates:
                 st.info("請在候選人卡片上勾選「📧 推薦給主管」後再操作。")
@@ -3945,10 +4003,6 @@ def _render_results():
                                 else:
                                     _status_fail = []
                                     for _cand in _sel_candidates:
-                                        _cand_email = str(_cand.get('Email', '') or '').strip()
-                                        if not _cand_email:
-                                            _status_fail.append(f"{_cand.get('真實姓名', '?')}（Email 空白，跳過狀態更新）")
-                                            continue
                                         _st_ok, _st_msg = update_application_status_gsheet(
                                             _status_sid, _job_name, _cand, "已推薦主管"
                                         )
