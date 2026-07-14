@@ -313,6 +313,7 @@ CONFIG_FILE       = "gsheet_config.json"   # shared with sync_to_gsheet.py
 # STAGES / STAGE_KEYS / STAGE_LABEL / STAGE_ICON / STAGE_BG / STAGE_FG
 # 定義已搬移至 hr_schema.py（單一來源）
 from hr_schema import STAGES, STAGE_KEYS, STAGE_LABEL, STAGE_ICON, STAGE_BG, STAGE_FG
+from sync_queue import load_pending as _load_pending_sync
 
 GRADE_META = {
     # grade: (bg, text, border, icon)
@@ -439,6 +440,7 @@ def _load_all_sheets() -> dict:
     # 若關鍵表（候選人/應徵）全空，代表可能是 429 快取污染，不存快取
     if not result.get("02_候選人主檔") and not result.get("03_應徵主檔"):
         _load_all_sheets.clear()
+    st.session_state["_data_fetched_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return result
 
 def _invalidate():
@@ -601,7 +603,7 @@ def fetch_all_hires() -> list:
             "candidate_id":    cid,
             "job_id":          row.get("job_id", ""),
             "start_date":      row.get("預計報到日", ""),
-            "employment_type": "全職",
+            "employment_type": row.get("聘用類型", "") or "全職",
             "proposed_salary": row.get("薪資（月）", "") or None,
             # 06_員工主檔 checklist 欄位直接用中文 key
             "錄取通知寄出":    row.get("錄取通知寄出", ""),
@@ -802,6 +804,7 @@ def save_hire(data: dict) -> bool:
             "試用期通過":     str(data.get("試用期通過", "") or ""),
             "離職日":         str(data.get("離職日", "") or ""),
             "離職原因類別":   str(data.get("離職原因類別", "") or ""),
+            "聘用類型":       str(data.get("employment_type", "") or ""),
         }
         _upsert_row(ws, "candidate_id", row_data)
         _invalidate()
@@ -1036,42 +1039,8 @@ def page_overview():
         st.success("✅ 目前無待處理事項！")
 
 # ══════════════════════════════════════════════════════════════
-# PAGE 2 — 招募看板（以職缺為單位的摘要卡 → 展開看候選人）
+# PAGE 2 — 招募看板（以職缺為單位，區塊內按階段並排欄位）
 # ══════════════════════════════════════════════════════════════
-def _kb_stage_pills(counts: dict) -> str:
-    """產生 stage 計數 pill 列的 HTML。"""
-    parts = []
-    for sk, label, icon, bg, fg in STAGES:
-        n = counts.get(sk, 0)
-        if n == 0:
-            continue
-        parts.append(
-            f'<span style="background:{bg};color:{fg};border:1px solid {fg}44;'
-            f'border-radius:20px;font-size:0.72rem;font-weight:700;padding:2px 9px;'
-            f'white-space:nowrap;">{icon} {label} {n}</span>'
-        )
-    return " ".join(parts) if parts else '<span style="color:#94a3b8;font-size:0.78rem;">尚無候選人</span>'
-
-def _kb_grade_bar(counts: dict, total: int) -> str:
-    """A/B/C 比例長條 HTML。"""
-    if not total:
-        return ""
-    bars = ""
-    for g, (bg, _, border, _) in GRADE_META.items():
-        pct = counts.get(g, 0) / total * 100
-        if pct > 0:
-            bars += f'<div style="width:{pct:.0f}%;background:{border};height:100%;"></div>'
-    return (
-        f'<div style="display:flex;width:100%;height:6px;border-radius:99px;'
-        f'overflow:hidden;background:#f1f5f9;margin-top:6px;">{bars}</div>'
-        f'<div style="display:flex;gap:8px;margin-top:4px;">'
-        + "".join(
-            f'<span style="font-size:0.68rem;color:{GRADE_META[g][1]};">'
-            f'{GRADE_META[g][3]}{g} {counts.get(g,0)}</span>'
-            for g in ("A","B","C") if counts.get(g,0)
-        )
-        + "</div>"
-    )
 
 def page_kanban():
     _col_refresh, _col_rej = st.columns([1, 5])
@@ -1085,10 +1054,11 @@ def page_kanban():
 
     show_rejected = _col_rej.checkbox("包含已結案候選人", value=False, key="kb_rejected")
 
-    # 以職缺分組（排除初篩中不顯示於看板）
-    KANBAN_STAGES = {"recommended", "interview_scheduled", "interviewed", "offer_pending", "hired"}
-    if show_rejected:
-        KANBAN_STAGES.add("rejected")
+    # 並排欄位（104式視覺化，非真拖曳）：每個職缺一個區塊，區塊內每個階段一欄
+    BOARD_STAGES = [s for s in STAGES if s[0] in
+                    ("recommended", "interview_scheduled", "interviewed", "offer_pending", "hired")]
+    BOARD_KEYS = {s[0] for s in BOARD_STAGES}
+    KANBAN_STAGES = BOARD_KEYS | ({"rejected"} if show_rejected else set())
 
     job_cands: dict[str, list] = {}
     no_job = []
@@ -1110,159 +1080,88 @@ def page_kanban():
         st.info("目前無候選人在招募流程中。")
         return
 
-    # ── 共用：渲染單筆候選人列 ──────────────────────
-    def _render_row(c, jid, sk, c_idx, pfx):
-        cid   = c["id"]
-        name  = c.get("name", "?")
-        grade = c.get("grade", "C")
-        gm    = GRADE_META.get(grade, ("#f8fafc","#475569","#9ca3af","📋"))
-        dt    = parse_dt(c.get("created_at"))
-        days  = (datetime.now() - dt).days if dt else 0
-        if days <= 7:
-            days_color = "#94a3b8"
-        elif days <= 14:
-            days_color = "#d97706"
-        else:
-            days_color = "#dc2626"
+    # ── 共用：渲染單張候選人卡片（並排欄位用，內容精簡為三行）──────
+    def _kb_card(c, jid, sk):
+        cid    = c["id"]
+        name   = c.get("name", "?")
+        grade  = c.get("grade", "C")
+        gm     = GRADE_META.get(grade, ("#f8fafc", "#475569", "#9ca3af", "📋"))
+        dt     = parse_dt(c.get("created_at"))
+        days   = (datetime.now() - dt).days if dt else 0
         source = c.get("source", "")
         note   = c.get("note", "")
-        cur_i = STAGE_KEYS.index(sk) if sk in STAGE_KEYS else 0
+        cur_i  = STAGE_KEYS.index(sk) if sk in STAGE_KEYS else 0
         next_s = [s for s in STAGE_KEYS[cur_i+1:cur_i+2] if s != "rejected"]
         has_rej = sk not in ("hired", "rejected")
-        btn_n   = len(next_s) + (1 if has_rej else 0)
-        bpfx    = f"{pfx}_{jid}_{sk}_{c_idx}"
+        bpfx   = f"kb_{jid}_{sk}_{cid}"
 
-        source_badge = (
-            f'&nbsp;<span style="background:#f1f5f9;color:#475569;'
-            f'border-radius:4px;font-size:0.65rem;font-weight:600;padding:1px 5px;">'
-            f'{_html.escape(source)}</span>'
-        ) if source else ""
-
-        ri, ra = st.columns([4, 3])
-        ri.markdown(
-            f'<div style="padding:4px 0;">'
-            f'<span style="font-weight:700;font-size:0.9rem;">{_html.escape(name)}</span>'
-            f'&nbsp;<span style="background:{gm[0]};color:{gm[1]};border:1.5px solid {gm[2]};'
-            f'border-radius:4px;font-size:0.68rem;font-weight:800;padding:1px 5px;">'
-            f'{gm[3]}{grade}</span>'
-            f'{source_badge}'
-            f'<span style="color:{days_color};font-size:0.72rem;margin-left:8px;">{days} 天</span>'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-        note_col1, note_col2 = st.columns([9, 1])
-        with note_col1:
-            if note:
-                note_preview = note if len(note) <= 40 else note[:40] + "…"
-                st.markdown(
-                    f'<div style="color:#94a3b8;font-size:0.72rem;padding:0 0 2px;">'
-                    f'📝 {_html.escape(note_preview)}</div>',
-                    unsafe_allow_html=True,
-                )
-        with note_col2:
-            with st.popover("📝", use_container_width=True):
-                new_note = st.text_area(
-                    "備註", value=note, key=f"{bpfx}_note_ta", label_visibility="collapsed",
-                )
-                if st.button("儲存", key=f"{bpfx}_note_save"):
-                    if update_note(cid, new_note):
-                        st.toast(f"✅ {name} 備註已更新")
-                        st.rerun()
-        with ra:
-            if btn_n > 0:
-                bcols = st.columns(btn_n)
-                for i, ns in enumerate(next_s):
-                    if bcols[i].button(f"→ {STAGE_LABEL[ns]}", key=f"{bpfx}_adv_{ns}", use_container_width=True):
-                        if update_stage(cid, ns):
-                            st.toast(f"✅ {name} → {STAGE_LABEL[ns]}")
+        with st.container(border=True):
+            nc1, nc2 = st.columns([5, 1])
+            nc1.markdown(
+                f'<div style="font-weight:700;font-size:0.85rem;line-height:1.3;">'
+                f'{_html.escape(name)}&nbsp;'
+                f'<span style="background:{gm[0]};color:{gm[1]};border:1.5px solid {gm[2]};'
+                f'border-radius:4px;font-size:0.65rem;font-weight:800;padding:0 4px;">'
+                f'{gm[3]}{grade}</span></div>',
+                unsafe_allow_html=True,
+            )
+            with nc2:
+                with st.popover("📝", use_container_width=True):
+                    new_note = st.text_area(
+                        "備註", value=note, key=f"{bpfx}_note_ta", label_visibility="collapsed",
+                    )
+                    if st.button("儲存", key=f"{bpfx}_note_save"):
+                        if update_note(cid, new_note):
+                            st.toast(f"✅ {name} 備註已更新")
                             st.rerun()
-                if has_rej:
-                    if bcols[len(next_s)].button("結案", key=f"{bpfx}_rej", use_container_width=True):
-                        if update_stage(cid, "rejected"):
-                            st.toast(f"{name} 已結案")
+            st.caption(f"{days}天 · {source}" if source else f"{days}天")
+
+            btns = []
+            if next_s:
+                btns.append(("→", next_s[0], f"推進到「{STAGE_LABEL[next_s[0]]}」"))
+            if has_rej:
+                btns.append(("✕", "rejected", "結案"))
+            if btns:
+                bcols = st.columns(len(btns))
+                for bi, (blabel, target, help_txt) in enumerate(btns):
+                    if bcols[bi].button(blabel, key=f"{bpfx}_{target}", help=help_txt, use_container_width=True):
+                        if update_stage(cid, target):
+                            st.toast(f"{name} 已結案" if target == "rejected" else f"✅ {name} → {STAGE_LABEL[target]}")
                             st.rerun()
-        st.markdown('<hr style="margin:2px 0;border-color:#f1f5f9;">', unsafe_allow_html=True)
 
-    # ══════════════════════════════════════════════
-    # 上段：待主管審核
-    # ══════════════════════════════════════════════
-    rec_meta = next(s for s in STAGES if s[0] == "recommended")
-    _, _, rec_icon, rec_bg, rec_fg = rec_meta
+    for job in all_jobs_with_data:
+        jid    = job["id"]
+        jtitle = job["title"]
+        jcands = job_cands.get(jid, [])
+        active = [c for c in jcands if c.get("stage") in BOARD_KEYS]
+        rejected_list = [c for c in jcands if c.get("stage") == "rejected"]
+        if not active and not rejected_list:
+            continue
 
-    st.markdown("### 👔 待主管審核")
-
-    rec_jobs = [j for j in all_jobs_with_data
-                if any(c.get("stage") == "recommended" for c in job_cands.get(j["id"], []))]
-
-    if not rec_jobs:
-        st.info("目前沒有候選人等待主管審核。")
-    else:
-        for job in rec_jobs:
-            jid    = job["id"]
-            jtitle = job["title"]
-            rec_list = [c for c in job_cands.get(jid, []) if c.get("stage") == "recommended"]
-            with st.container(border=True):
-                st.markdown(
-                    f'<div style="font-weight:800;font-size:1rem;margin-bottom:8px;">'
-                    f'{_html.escape(jtitle)}'
-                    f'<span style="background:{rec_bg};color:{rec_fg};border-radius:4px;'
-                    f'font-size:0.75rem;font-weight:700;padding:2px 8px;margin-left:8px;">'
-                    f'{rec_icon} {len(rec_list)} 人待審</span></div>',
-                    unsafe_allow_html=True,
-                )
-                for c_idx, c in enumerate(rec_list):
-                    _render_row(c, jid, "recommended", c_idx, "ka")
-
-    # ══════════════════════════════════════════════
-    # 下段：招募進度（面試之後）
-    # ══════════════════════════════════════════════
-    PIPELINE_KEYS = {"interview_scheduled", "interviewed", "offer_pending", "hired"}
-    if show_rejected:
-        PIPELINE_KEYS.add("rejected")
-    PIPELINE_STAGE_LIST = [s for s in STAGES if s[0] in PIPELINE_KEYS]
-
-    st.markdown("---")
-    st.markdown("### 📊 招募進度")
-
-    pipe_jobs = [j for j in all_jobs_with_data
-                 if any(c.get("stage") in PIPELINE_KEYS for c in job_cands.get(j["id"], []))]
-
-    if not pipe_jobs:
-        st.info("目前無進行中的面試或後續流程。")
-    else:
-        for job in pipe_jobs:
-            jid    = job["id"]
-            jtitle = job["title"]
-            pcands = [c for c in job_cands.get(jid, []) if c.get("stage") in PIPELINE_KEYS]
-            sc = {}
-            gc = {}
-            for c in pcands:
-                sc[c.get("stage","screening")] = sc.get(c.get("stage","screening"), 0) + 1
-                gc[c.get("grade","C")] = gc.get(c.get("grade","C"), 0) + 1
-
-            with st.container(border=True):
-                st.markdown(
-                    f'<div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:4px;">'
-                    f'<span style="font-weight:800;font-size:1rem;">{_html.escape(jtitle)}</span>'
-                    f'<span style="font-size:0.8rem;font-weight:600;color:#6b7280;">{len(pcands)} 人</span>'
-                    f'<span style="margin-left:4px;">' + _kb_stage_pills(sc) + f'</span></div>'
-                    + _kb_grade_bar(gc, len(pcands)),
-                    unsafe_allow_html=True,
-                )
-                with st.expander(f"展開 {len(pcands)} 位候選人明細", expanded=False):
-                    for sk, label, icon, bg, fg in PIPELINE_STAGE_LIST:
-                        sl = [c for c in pcands if c.get("stage") == sk]
-                        if not sl:
-                            continue
-                        st.markdown(
-                            f'<div style="background:{bg};border-left:4px solid {fg};'
-                            f'border-radius:0 6px 6px 0;padding:4px 10px;margin:8px 0 4px;'
-                            f'font-size:0.78rem;font-weight:800;color:{fg};">'
-                            f'{icon} {label} · {len(sl)} 人</div>',
-                            unsafe_allow_html=True,
-                        )
-                        for c_idx, c in enumerate(sl):
-                            _render_row(c, jid, sk, c_idx, "kb")
+        with st.container(border=True):
+            st.markdown(
+                f'<div style="font-weight:800;font-size:1.05rem;margin-bottom:6px;">'
+                f'{_html.escape(jtitle)}'
+                f'<span style="font-size:0.8rem;font-weight:600;color:#6b7280;margin-left:8px;">'
+                f'{len(active)} 人</span></div>',
+                unsafe_allow_html=True,
+            )
+            cols = st.columns(len(BOARD_STAGES))
+            for i, (sk, label, icon, bg, fg) in enumerate(BOARD_STAGES):
+                with cols[i]:
+                    stage_list = [c for c in active if c.get("stage") == sk]
+                    st.markdown(
+                        f'<div style="background:{bg};color:{fg};border-radius:4px;padding:3px 6px;'
+                        f'font-size:0.7rem;font-weight:800;text-align:center;margin-bottom:6px;">'
+                        f'{icon} {label} ({len(stage_list)})</div>',
+                        unsafe_allow_html=True,
+                    )
+                    for c in stage_list:
+                        _kb_card(c, jid, sk)
+            if show_rejected and rejected_list:
+                with st.expander(f"已結案（{len(rejected_list)}）", expanded=False):
+                    for c in rejected_list:
+                        _kb_card(c, jid, "rejected")
 
 # ══════════════════════════════════════════════════════════════
 # PAGE 3 — 候選人
@@ -2302,7 +2201,8 @@ with st.sidebar:
         label_visibility="collapsed",
     )
     st.markdown("---")
-    if st.button("🔄 重新整理資料", use_container_width=True):
+    if st.button("🔄 從 Google Sheets 重新載入", use_container_width=True,
+                 help="清除快取並重新讀取六個主檔，這是唯一的資料更新入口"):
         _invalidate()
         st.rerun()
     if st.button("💾 備份六主檔到本機", use_container_width=True):
@@ -2312,7 +2212,17 @@ with st.sidebar:
             st.success(f"已備份六主檔到 backups/{_msg}/")
         else:
             st.error(f"備份失敗：{_msg}")
+    _fetched_at = st.session_state.get("_data_fetched_at")
+    if _fetched_at:
+        st.caption(f"資料載入時間：{_fetched_at}")
     st.caption(f"今天：{date.today().strftime('%Y/%m/%d')}")
+
+    _pending_syncs = _load_pending_sync()
+    if _pending_syncs:
+        st.error(f"⚠️ 初篩端有 {len(_pending_syncs)} 筆流程狀態同步失敗")
+        for _p in _pending_syncs:
+            st.caption(f"{_p['name']}（{_p['job_name']} → {_p['new_status']}）")
+        st.caption("請開啟 app.py 側欄重試同步")
 
 _PAGE_META = {
     "🏠 本週 + 下週總覽": ("🏠 本週 + 下週總覽", "面試行程 · 報到事件 · 待辦事項一覽"),

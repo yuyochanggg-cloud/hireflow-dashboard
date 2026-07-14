@@ -863,6 +863,7 @@ def _upsert_rows(ws, new_rows, key_cols, protect_cols=None):
 # ── 欄位定義（對應 GAS 建立的六主檔 header）─────────────────────
 # 定義已搬移至 hr_schema.py（單一來源），此處保留同名別名避免動到下游程式碼
 from hr_schema import S2_COLS as _S2_COLS, S3_COLS as _S3_COLS, S4_COLS as _S4_COLS
+from sync_queue import load_pending as _load_pending_sync, add_pending as _add_pending_sync, remove_pending as _remove_pending_sync
 
 def _build_master_rows(jd_name, candidates):
     """將一個職缺的候選人清單轉成三張主檔的 rows。"""
@@ -947,6 +948,11 @@ def sync_library_to_gsheet(jd_name, spreadsheet_id):
         return False, "請先執行 pip install gspread"
     if not spreadsheet_id:
         return False, "尚未設定試算表 ID"
+    # 事故紀錄 2026-07-14：曾發生職缺名稱仍是 selectbox 的預設佔位字串就被寫進
+    # 03_應徵主檔（葉宇騫案），導致之後所有以真實職缺名組 application_id 的比對
+    # 都找不到這筆紀錄。此處擋住任何佔位字串繼續往下寫入六主檔。
+    if not jd_name or jd_name.strip() in ("➕ 新增自訂職缺",) or jd_name.strip().startswith("__"):
+        return False, f"職缺名稱無效（「{jd_name}」仍是預設佔位值），請先命名職缺再同步"
     candidates = load_resume_library(jd_name)
     if not candidates:
         return False, f"「{jd_name}」人才庫為空"
@@ -1009,6 +1015,53 @@ def update_application_status_gsheet(spreadsheet_id, job_name, candidate, new_st
         return False, f"找不到 {name}（{app_id}）對應的應徵紀錄，請先同步一次"
     except Exception as e:
         return False, f"更新失敗：{e}"
+
+def update_application_statuses_batch(spreadsheet_id, job_name, candidates, new_status):
+    """把多位候選人在 03_應徵主檔 的「流程狀態」一次更新為 new_status。
+    跟 update_application_status_gsheet 邏輯相同，差別是整批只讀表一次、只寫一次
+    （batch_update），避免 N 個候選人觸發 N 次全表讀寫、增加 429 風險。
+    回傳 (ok_pairs, fail_pairs)：兩者皆為 (candidate, msg) tuple 列表，
+    候選人物件保留原樣方便呼叫端做後續處理（如記入待補清單）。
+    """
+    if not _GSPREAD_AVAILABLE:
+        return [], [(c, "請先執行 pip install gspread") for c in candidates]
+    if not spreadsheet_id:
+        return [], [(c, "尚未設定試算表 ID") for c in candidates]
+    try:
+        sh = _get_gsheet_client(spreadsheet_id)
+        ws = sh.worksheet("03_應徵主檔")
+        existing = ws.get_all_values()
+    except Exception as e:
+        return [], [(c, f"連線失敗 [{type(e).__name__}] {e}") for c in candidates]
+
+    if not existing:
+        return [], [(c, "03_應徵主檔為空") for c in candidates]
+    header = existing[0]
+    if "流程狀態" not in header:
+        return [], [(c, "找不到「流程狀態」欄") for c in candidates]
+    status_col_letter = gspread.utils.rowcol_to_a1(1, header.index("流程狀態") + 1)
+    status_col_letter = re.sub(r'\d+$', '', status_col_letter)  # 只要欄字母（如 "Q"）
+    row_by_appid = {row[0]: i for i, row in enumerate(existing[1:], start=2) if row}
+
+    job_safe = re.sub(r'[^\w\-]', '_', job_name)[:20]
+    ok_pairs, fail_pairs, updates = [], [], []
+    for c in candidates:
+        code = str(c.get('104代碼', '') or '')
+        name = str(c.get('真實姓名', '') or '')
+        app_id = f"APP-{code}-{job_safe}"
+        row_i = row_by_appid.get(app_id)
+        if row_i is None:
+            fail_pairs.append((c, f"找不到（{app_id}）對應的應徵紀錄，請先同步一次"))
+            continue
+        updates.append({"range": f"{status_col_letter}{row_i}", "values": [[new_status]]})
+        ok_pairs.append((c, name))
+
+    if updates:
+        try:
+            ws.batch_update(updates)
+        except Exception as e:
+            return [], [(c, f"批次更新失敗 {e}") for c, _ in ok_pairs] + fail_pairs
+    return ok_pairs, fail_pairs
 
 def sync_all_libraries_to_gsheet(spreadsheet_id):
     """同步所有職缺到六主檔。"""
@@ -2608,6 +2661,24 @@ with st.sidebar:
                 "https://www.googleapis.com/auth/drive.file`"
             )
 
+    # ── 流程狀態待補清單（同步失敗持久化提醒）────────────────────
+    _pending_syncs = _load_pending_sync()
+    if _pending_syncs:
+        st.divider()
+        st.error(f"⚠️ 有 {len(_pending_syncs)} 筆流程狀態未同步到 Sheets")
+        for _p in _pending_syncs:
+            st.caption(f"{_p['name']}（{_p['job_name']} → {_p['new_status']}）{_p['ts']}｜{_p['error']}")
+        if st.button("🔁 立即重試同步", key="retry_pending_sync"):
+            _sid_retry = load_gsheet_id()
+            for _p in _pending_syncs:
+                _ok_retry, _msg_retry = update_application_status_gsheet(
+                    _sid_retry, _p["job_name"],
+                    {"104代碼": _p["code"], "真實姓名": _p["name"]}, _p["new_status"]
+                )
+                if _ok_retry:
+                    _remove_pending_sync(_p["key"])
+            st.rerun()
+
     # ── Prompt 管理（讓 HR 主管自行檢視/調整 AI prompt，不需改程式碼）────
     st.divider()
     with st.expander("⚙️ Prompt 管理", expanded=False):
@@ -4070,19 +4141,19 @@ def _render_results():
                                 # 寄信成功 → 逐一將候選人在 03 主檔的流程狀態推進為「已推薦主管」
                                 _status_sid = load_gsheet_id()
                                 if not _status_sid:
-                                    st.warning("本次流程狀態未同步到 Sheets：尚未設定試算表 ID，請至側欄設定後手動同步。")
-                                else:
-                                    _status_fail = []
+                                    st.error("本次流程狀態未同步到 Sheets：尚未設定試算表 ID。已記入待補清單，設定試算表ID後可在側欄重試。")
                                     for _cand in _sel_candidates:
-                                        _st_ok, _st_msg = update_application_status_gsheet(
-                                            _status_sid, _job_name, _cand, "已推薦主管"
-                                        )
-                                        if not _st_ok:
-                                            _status_fail.append(f"{_cand.get('真實姓名', '?')}：{_st_msg}")
-                                    if _status_fail:
-                                        st.warning(
-                                            "以下候選人流程狀態未成功推進，請稍後手動同步：\n"
-                                            + "\n".join(_status_fail)
+                                        _add_pending_sync(_job_name, _cand, "已推薦主管", "尚未設定試算表 ID")
+                                else:
+                                    _ok_pairs, _fail_pairs = update_application_statuses_batch(
+                                        _status_sid, _job_name, _sel_candidates, "已推薦主管"
+                                    )
+                                    for _fail_cand, _fail_msg in _fail_pairs:
+                                        _add_pending_sync(_job_name, _fail_cand, "已推薦主管", _fail_msg)
+                                    if _fail_pairs:
+                                        st.error(
+                                            "以下候選人流程狀態未成功推進到 Sheets，已記入待補清單（側欄可重試）：\n"
+                                            + "\n".join(f"{c.get('真實姓名', '?')}：{m}" for c, m in _fail_pairs)
                                         )
                             except Exception as _e:
                                 st.error(f"❌ 寄信失敗：{_e}")
