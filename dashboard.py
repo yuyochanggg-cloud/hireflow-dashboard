@@ -1081,6 +1081,24 @@ def page_kanban():
         st.info("目前無候選人在招募流程中。")
         return
 
+    # 卡片/職缺區塊用比全站預設更緊湊的內距，一次能看到更多職缺
+    st.markdown("""
+<style>
+.st-key-kb_card [data-testid="stVerticalBlockBorderWrapper"] > div { padding: 6px 10px !important; }
+.st-key-kb_job [data-testid="stVerticalBlockBorderWrapper"] > div { padding: 8px 14px 10px !important; }
+</style>
+""", unsafe_allow_html=True)
+
+    # ── 階段表頭：整頁只出現一次，底下每個職缺共用同一組欄位對齊 ──────
+    _hdr_cols = st.columns(len(BOARD_STAGES))
+    for _hc, (sk, label, icon, bg, fg) in zip(_hdr_cols, BOARD_STAGES):
+        _hc.markdown(
+            f'<div style="background:{bg};color:{fg};border-radius:4px;padding:3px 6px;'
+            f'font-size:0.7rem;font-weight:800;text-align:center;">{icon} {label}</div>',
+            unsafe_allow_html=True,
+        )
+    st.write("")
+
     # ── 共用：渲染單張候選人卡片（並排欄位用，內容精簡為三行）──────
     def _kb_card(c, jid, sk):
         cid    = c["id"]
@@ -1096,7 +1114,7 @@ def page_kanban():
         has_rej = sk not in ("hired", "rejected")
         bpfx   = f"kb_{jid}_{sk}_{cid}"
 
-        with st.container(border=True):
+        with st.container(border=True, key=f"kb_card_{bpfx}"):
             nc1, nc2 = st.columns([5, 1])
             nc1.markdown(
                 f'<div style="font-weight:700;font-size:0.85rem;line-height:1.3;">'
@@ -1117,18 +1135,26 @@ def page_kanban():
                             st.rerun()
             st.caption(f"{days}天 · {source}" if source else f"{days}天")
 
-            btns = []
-            if next_s:
-                btns.append(("→", next_s[0], f"推進到「{STAGE_LABEL[next_s[0]]}」"))
-            if has_rej:
-                btns.append(("✕", "rejected", "結案"))
-            if btns:
-                bcols = st.columns(len(btns))
-                for bi, (blabel, target, help_txt) in enumerate(btns):
-                    if bcols[bi].button(blabel, key=f"{bpfx}_{target}", help=help_txt, use_container_width=True):
-                        if update_stage(cid, target):
-                            st.toast(f"{name} 已結案" if target == "rejected" else f"✅ {name} → {STAGE_LABEL[target]}")
-                            st.rerun()
+            if sk == "hired":
+                # 已通知是看板的終點站，這裡不再有下一步「推進」動作，
+                # 改成跳去到職流程頁定位到這個人，避免卡在這裡沒有任何操作。
+                if st.button("→ 到職追蹤", key=f"{bpfx}_goto_onboard", use_container_width=True):
+                    st.session_state['_pending_nav'] = "✅ 到職流程"
+                    st.session_state['_onboard_focus_cid'] = cid
+                    st.rerun()
+            else:
+                btns = []
+                if next_s:
+                    btns.append(("→", next_s[0], f"推進到「{STAGE_LABEL[next_s[0]]}」"))
+                if has_rej:
+                    btns.append(("✕", "rejected", "結案"))
+                if btns:
+                    bcols = st.columns(len(btns))
+                    for bi, (blabel, target, help_txt) in enumerate(btns):
+                        if bcols[bi].button(blabel, key=f"{bpfx}_{target}", help=help_txt, use_container_width=True):
+                            if update_stage(cid, target):
+                                st.toast(f"{name} 已結案" if target == "rejected" else f"✅ {name} → {STAGE_LABEL[target]}")
+                                st.rerun()
 
     for job in all_jobs_with_data:
         jid    = job["id"]
@@ -1139,11 +1165,11 @@ def page_kanban():
         if not active and not rejected_list:
             continue
 
-        with st.container(border=True):
+        with st.container(border=True, key=f"kb_job_{jid}"):
             st.markdown(
-                f'<div style="font-weight:800;font-size:1.05rem;margin-bottom:6px;">'
+                f'<div style="font-weight:800;font-size:0.95rem;margin-bottom:2px;">'
                 f'{_html.escape(jtitle)}'
-                f'<span style="font-size:0.8rem;font-weight:600;color:#6b7280;margin-left:8px;">'
+                f'<span style="font-size:0.75rem;font-weight:600;color:#6b7280;margin-left:8px;">'
                 f'{len(active)} 人</span></div>',
                 unsafe_allow_html=True,
             )
@@ -1151,12 +1177,9 @@ def page_kanban():
             for i, (sk, label, icon, bg, fg) in enumerate(BOARD_STAGES):
                 with cols[i]:
                     stage_list = [c for c in active if c.get("stage") == sk]
-                    st.markdown(
-                        f'<div style="background:{bg};color:{fg};border-radius:4px;padding:3px 6px;'
-                        f'font-size:0.7rem;font-weight:800;text-align:center;margin-bottom:6px;">'
-                        f'{icon} {label} ({len(stage_list)})</div>',
-                        unsafe_allow_html=True,
-                    )
+                    if not stage_list:
+                        st.caption("—")
+                        continue
                     for c in stage_list:
                         _kb_card(c, jid, sk)
             if show_rejected and rejected_list:
@@ -1730,6 +1753,17 @@ def page_onboarding():
         st.info("目前無進行中的到職流程（需要「錄取審核」或「已錄取」狀態的候選人）。")
         return
 
+    # 從招募看板「→ 到職追蹤」按鈕跳轉過來時，把該候選人排到最前面並提示
+    _focus_cid = st.session_state.pop('_onboard_focus_cid', None)
+    if _focus_cid:
+        _focus_name = next((c.get("name", "?") for c in target_cands if c["id"] == _focus_cid), None)
+        if _focus_name:
+            st.info(f"🔎 已定位到「{_focus_name}」")
+            target_cands = (
+                [c for c in target_cands if c["id"] == _focus_cid]
+                + [c for c in target_cands if c["id"] != _focus_cid]
+            )
+
     for c in target_cands:
         cid     = c["id"]
         name    = c.get("name", "?")
@@ -2189,6 +2223,11 @@ with st.sidebar:
         'ECLIFE · 招募任用儀表板</div>',
         unsafe_allow_html=True,
     )
+    # session_state['nav']（radio的key）在widget實例化後就不能再改，跨頁按鈕
+    # （如看板「→ 到職追蹤」）要切頁一律先寫進 _pending_nav，這裡搶在widget
+    # 實例化之前把它套用回nav。
+    if st.session_state.get('_pending_nav'):
+        st.session_state['nav'] = st.session_state.pop('_pending_nav')
     page = st.radio(
         "導覽",
         ["🏠 本週 + 下週總覽",
