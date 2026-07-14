@@ -1122,43 +1122,48 @@ def page_kanban():
         has_rej = sk not in ("hired", "rejected")
         bpfx   = f"kb_{jid}_{sk}_{cid}"
 
+        meta = f"{days}天 · {_html.escape(source)}" if source else f"{days}天"
         with st.container(border=True, key=f"kb_card_{bpfx}"):
             # 姓名+等第：字級拉到 --fs-sm（可讀），允許換行，不再用ellipsis
             # 硬裁字——裁字才是使用者真正在意的「看不到人在哪」的根源。
+            # 天數/來源不再佔一整行，改成滑鼠停留在姓名上的title提示。
             st.markdown(
-                f'<div style="font-size:var(--fs-sm);line-height:1.4;">'
+                f'<div style="font-size:var(--fs-sm);line-height:1.4;" title="{meta}">'
                 f'{_html.escape(name)}&nbsp;'
                 f'<span style="background:{gm[0]};color:{gm[1]};border:1px solid {gm[2]};'
                 f'border-radius:4px;font-size:var(--fs-xs);padding:0 4px;white-space:nowrap;">'
                 f'{gm[3]}{grade}</span></div>',
                 unsafe_allow_html=True,
             )
-            st.caption(f"{days}天 · {source}" if source else f"{days}天")
 
+            # 推進/結案/備註三顆動作並排一行，卡片只剩兩行（手繪稿版型）
             if sk == "hired":
-                # 已通知是看板的終點站，改成跳去到職流程頁定位到這個人，
-                # 避免卡在這裡沒有任何操作。
-                if st.button("→ 到職追蹤", key=f"{bpfx}_goto_onboard", use_container_width=True):
+                bc1, bc2 = st.columns([2, 1])
+                if bc1.button("→ 到職追蹤", key=f"{bpfx}_goto_onboard", use_container_width=True):
                     st.session_state['_pending_nav'] = "✅ 到職流程"
                     st.session_state['_onboard_focus_cid'] = cid
                     st.rerun()
+                with bc2:
+                    if st.button("備" + ("●" if note else ""), key=f"{bpfx}_note_toggle",
+                                 help=note if note else "新增備註", use_container_width=True):
+                        st.session_state[f"{bpfx}_note_open"] = not st.session_state.get(f"{bpfx}_note_open", False)
             else:
+                bc1, bc2, bc3 = st.columns(3)
                 if next_s:
-                    if st.button(f"→ {STAGE_LABEL[next_s[0]]}", key=f"{bpfx}_{next_s[0]}", use_container_width=True):
+                    if bc1.button("→", key=f"{bpfx}_{next_s[0]}", use_container_width=True,
+                                  help=f"推進到「{STAGE_LABEL[next_s[0]]}」"):
                         if update_stage(cid, next_s[0]):
                             st.toast(f"✅ {name} → {STAGE_LABEL[next_s[0]]}")
                             st.rerun()
                 if has_rej:
-                    if st.button("✕ 結案", key=f"{bpfx}_rejected", use_container_width=True):
+                    if bc2.button("✕", key=f"{bpfx}_rejected", use_container_width=True, help="結案"):
                         if update_stage(cid, "rejected"):
                             st.toast(f"{name} 已結案")
                             st.rerun()
+                if bc3.button("備" + ("●" if note else ""), key=f"{bpfx}_note_toggle",
+                              use_container_width=True, help=note if note else "新增備註"):
+                    st.session_state[f"{bpfx}_note_open"] = not st.session_state.get(f"{bpfx}_note_open", False)
 
-            # 備註：獨立一整行、不強制撐滿寬度，icon跟popover內建的箭頭
-            # 才有空間並排、不會疊在一起。
-            if st.button("📝 備註" + (" ●" if note else ""), key=f"{bpfx}_note_toggle",
-                         help=note if note else "新增備註"):
-                st.session_state[f"{bpfx}_note_open"] = not st.session_state.get(f"{bpfx}_note_open", False)
             if st.session_state.get(f"{bpfx}_note_open"):
                 new_note = st.text_area("備註", value=note, key=f"{bpfx}_note_ta", label_visibility="collapsed")
                 if st.button("儲存", key=f"{bpfx}_note_save"):
