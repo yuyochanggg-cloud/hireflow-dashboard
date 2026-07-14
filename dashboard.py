@@ -1084,14 +1084,26 @@ def page_kanban():
     # 卡片/職缺區塊用比全站預設更緊湊的內距，一次能看到更多職缺
     st.markdown("""
 <style>
-.st-key-kb_card [data-testid="stVerticalBlockBorderWrapper"] > div { padding: 6px 10px !important; }
-.st-key-kb_job [data-testid="stVerticalBlockBorderWrapper"] > div { padding: 8px 14px 10px !important; }
+.st-key-kb_card [data-testid="stVerticalBlockBorderWrapper"] > div { padding: 3px 8px !important; }
+.st-key-kb_card [data-testid="stVerticalBlock"] { gap: 0.25rem !important; }
+.st-key-kb_card [data-testid="stButton"] button {
+  padding: 1px 6px !important; min-height: 1.5rem !important;
+  font-size: 0.75rem !important; font-weight: 400 !important;
+}
+.st-key-kb_job [data-testid="stVerticalBlockBorderWrapper"] > div { padding: 8px 14px !important; }
 </style>
 """, unsafe_allow_html=True)
 
+    # 第一欄放職缺名稱（當作row label），其餘每欄對應一個階段
+    _COL_WIDTHS = [1.3] + [1] * len(BOARD_STAGES)
+
     # ── 階段表頭：整頁只出現一次，底下每個職缺共用同一組欄位對齊 ──────
-    _hdr_cols = st.columns(len(BOARD_STAGES))
-    for _hc, (sk, label, icon, bg, fg) in zip(_hdr_cols, BOARD_STAGES):
+    _hdr_cols = st.columns(_COL_WIDTHS)
+    _hdr_cols[0].markdown(
+        '<div style="font-size:0.7rem;font-weight:800;color:#94a3b8;">職缺</div>',
+        unsafe_allow_html=True,
+    )
+    for _hc, (sk, label, icon, bg, fg) in zip(_hdr_cols[1:], BOARD_STAGES):
         _hc.markdown(
             f'<div style="background:{bg};color:{fg};border-radius:4px;padding:3px 6px;'
             f'font-size:0.7rem;font-weight:800;text-align:center;">{icon} {label}</div>',
@@ -1114,14 +1126,17 @@ def page_kanban():
         has_rej = sk not in ("hired", "rejected")
         bpfx   = f"kb_{jid}_{sk}_{cid}"
 
+        meta = f"{days}天" + (f" · {_html.escape(source)}" if source else "")
         with st.container(border=True, key=f"kb_card_{bpfx}"):
             nc1, nc2 = st.columns([5, 1])
             nc1.markdown(
-                f'<div style="font-weight:700;font-size:0.85rem;line-height:1.3;">'
+                f'<div style="font-size:0.75rem;line-height:1.4;white-space:nowrap;'
+                f'overflow:hidden;text-overflow:ellipsis;">'
                 f'{_html.escape(name)}&nbsp;'
-                f'<span style="background:{gm[0]};color:{gm[1]};border:1.5px solid {gm[2]};'
-                f'border-radius:4px;font-size:0.65rem;font-weight:800;padding:0 4px;">'
-                f'{gm[3]}{grade}</span></div>',
+                f'<span style="background:{gm[0]};color:{gm[1]};border:1px solid {gm[2]};'
+                f'border-radius:4px;font-size:0.75rem;padding:0 4px;">'
+                f'{gm[3]}{grade}</span>'
+                f'<span style="color:#94a3b8;">&nbsp;· {meta}</span></div>',
                 unsafe_allow_html=True,
             )
             with nc2:
@@ -1133,7 +1148,6 @@ def page_kanban():
                         if update_note(cid, new_note):
                             st.toast(f"✅ {name} 備註已更新")
                             st.rerun()
-            st.caption(f"{days}天 · {source}" if source else f"{days}天")
 
             if sk == "hired":
                 # 已通知是看板的終點站，這裡不再有下一步「推進」動作，
@@ -1166,16 +1180,15 @@ def page_kanban():
             continue
 
         with st.container(border=True, key=f"kb_job_{jid}"):
-            st.markdown(
-                f'<div style="font-weight:800;font-size:0.95rem;margin-bottom:2px;">'
-                f'{_html.escape(jtitle)}'
-                f'<span style="font-size:0.75rem;font-weight:600;color:#6b7280;margin-left:8px;">'
-                f'{len(active)} 人</span></div>',
+            cols = st.columns(_COL_WIDTHS)
+            cols[0].markdown(
+                f'<div style="font-weight:800;font-size:0.85rem;line-height:1.25;">'
+                f'{_html.escape(jtitle)}</div>'
+                f'<div style="font-size:0.72rem;font-weight:600;color:#6b7280;">{len(active)} 人</div>',
                 unsafe_allow_html=True,
             )
-            cols = st.columns(len(BOARD_STAGES))
             for i, (sk, label, icon, bg, fg) in enumerate(BOARD_STAGES):
-                with cols[i]:
+                with cols[i + 1]:
                     stage_list = [c for c in active if c.get("stage") == sk]
                     if not stage_list:
                         st.caption("—")
