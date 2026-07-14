@@ -37,51 +37,12 @@ warnings.filterwarnings("ignore")
 logging.getLogger("pdfminer").setLevel(logging.ERROR)
 st.set_page_config(page_title="ECLIFE 混合式 AI 招募助理", page_icon="🧬", layout="wide")
 
-# ── Design tokens + Global theme ─────────────────────────────
+from theme import inject_theme, render_brand_header
+inject_theme()
+
+# ── Global theme（顏色/字體/圓角/陰影token已移到theme.py共用，這裡只留版面樣式）──
 st.markdown("""
 <style>
-/* ── 字型引入 ── */
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
-
-/* ── Token 定義 ── */
-:root {
-  --c-primary:      #1e40af;
-  --c-primary-lite: #dbeafe;
-  --c-accent:       #3b82f6;
-  --c-accent-dark:  #1d4ed8;
-
-  /* Grade A：金色系；Grade B：寶藍系 */
-  --c-grade-a-bg:     #fffbeb; --c-grade-a:     #92400e; --c-grade-a-border: #f59e0b;
-  --c-grade-b-bg:     #eff6ff; --c-grade-b:     #1e40af; --c-grade-b-border: #3b82f6;
-
-  --c-ok:  #15803d; --c-ok-bg:  #f0fdf4; --c-ok-border:  #86efac;
-  --c-warn:#b45309; --c-warn-bg:#fffbeb; --c-warn-border:#fcd34d;
-  --c-err: #b91c1c; --c-err-bg: #fef2f2; --c-err-border: #fca5a5;
-
-  --c-text:       #0f172a;
-  --c-text-muted: #64748b;
-  --c-border:     #e2e8f0;
-  --c-surface:    #f8fafc;
-  --c-surface-2:  #f1f5f9;
-  --c-card-bg:    #ffffff;
-
-  /* Sidebar 深色系 */
-  --sb-bg:       #0f172a;
-  --sb-surface:  #1e293b;
-  --sb-surface2: #273447;
-  --sb-border:   #334155;
-  --sb-text:     #e2e8f0;
-  --sb-muted:    #94a3b8;
-
-  --shadow-sm:   0 1px 3px rgba(0,0,0,.07), 0 1px 2px rgba(0,0,0,.04);
-  --shadow-md:   0 4px 14px rgba(0,0,0,.09), 0 2px 4px rgba(0,0,0,.05);
-  --shadow-card: 0 0 0 1px rgba(15,23,42,.05), 0 2px 8px rgba(15,23,42,.07);
-  --shadow-btn:  0 4px 14px rgba(37,99,235,.30);
-  --radius:      9px;
-  --font-data:   "JetBrains Mono", "SF Mono", ui-monospace, monospace;
-  --font-ui:     "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-}
-
 /* ── 全域字型 ── */
 html, body, [class*="css"] { font-family: var(--font-ui) !important; }
 h1 { font-weight: 800 !important; letter-spacing: -.025em !important; }
@@ -863,6 +824,7 @@ def _upsert_rows(ws, new_rows, key_cols, protect_cols=None):
 # ── 欄位定義（對應 GAS 建立的六主檔 header）─────────────────────
 # 定義已搬移至 hr_schema.py（單一來源），此處保留同名別名避免動到下游程式碼
 from hr_schema import S2_COLS as _S2_COLS, S3_COLS as _S3_COLS, S4_COLS as _S4_COLS
+from hr_schema import GRADE_META as _GRADE_META, GRADE_DEFAULT as _GRADE_DEFAULT
 from sync_queue import load_pending as _load_pending_sync, add_pending as _add_pending_sync, remove_pending as _remove_pending_sync
 
 def _build_master_rows(jd_name, candidates):
@@ -2062,6 +2024,7 @@ def _enter_job_from_library(jd_name):
 
 def render_home_page():
     """首頁：職缺卡片牆"""
+    render_brand_header("履歷初篩引擎")
     # ── Header ──────────────────────────────────────────────────
     _h1, _h2 = st.columns([6, 2])
     with _h1:
@@ -2327,6 +2290,8 @@ if st.session_state.get('view', 'home') == 'home':
 
 # ── 職缺工作頁 ────────────────────────────
 _active_job = st.session_state.get('active_job', '')
+
+render_brand_header("履歷初篩引擎")
 
 # 標題列：返回按鈕 + 職缺名稱
 _title_back, _title_main = st.columns([1, 9])
@@ -3460,27 +3425,13 @@ def _render_results():
                     residence = _html_module.escape(_s(row.get('居住地'), ''))
 
                     grade_letter = grade[0].upper() if grade else '?'
-                    # 精緻化 grade 徽章：A = 金色邊框 + 深琥珀文字，B = 寶藍邊框
-                    _grade_styles = {
-                        'A': {
-                            'bg':     '#fffbeb',
-                            'color':  '#92400e',
-                            'border': '2px solid #f59e0b',
-                            'icon':   '🏆',
-                            'accent': '#f59e0b',   # 卡片左側色條顏色
-                        },
-                        'B': {
-                            'bg':     '#eff6ff',
-                            'color':  '#1e40af',
-                            'border': '2px solid #3b82f6',
-                            'icon':   '✅',
-                            'accent': '#3b82f6',
-                        },
+                    # Grade 徽章顏色權威來源：hr_schema.GRADE_META（跟dashboard.py共用）
+                    _gm = _GRADE_META.get(grade_letter, _GRADE_DEFAULT)
+                    _gs = {
+                        'bg': _gm['bg'], 'color': _gm['fg'],
+                        'border': f"2px solid {_gm['border']}",
+                        'icon': _gm['icon'], 'accent': _gm['border'],
                     }
-                    _gs = _grade_styles.get(grade_letter, {
-                        'bg': 'var(--c-surface-2)', 'color': 'var(--c-text-muted)',
-                        'border': '2px solid var(--c-border)', 'icon': '📋', 'accent': '#cbd5e1',
-                    })
 
                     stab_cfg = {
                         '高': ('#f0fdf4','#15803d'),
@@ -3488,19 +3439,8 @@ def _render_results():
                         '低': ('#fef2f2','#991b1b'),
                     }.get(stab, ('var(--c-surface-2)', 'var(--c-text-muted)'))
 
-                    # 已推薦 badge：先算好避免在 f-string 內嵌 multiline expression
-                    _rec_entries = _recommended_lookup.get(str(row.get('真實姓名', '')), [])
-                    _badges_html = ''.join(
-                        '<span style="font-size:0.72rem;background:#f0fdf4;color:#15803d;'
-                        'padding:2px 9px;border-radius:4px;font-weight:600;'
-                        'border:1px solid #86efac;white-space:nowrap;">'
-                        f'✅ 已推薦｜{_html_module.escape(_r["job"])} → '
-                        f'{_html_module.escape(_r["recipient"].split()[-1] if _r["recipient"] else "?")} · {_r["date"]}'
-                        '</span>'
-                        for _r in _rec_entries
-                    )
-
                     # 已推薦 badge：獨立渲染，不放進主 HTML f-string
+                    _rec_entries = _recommended_lookup.get(str(row.get('真實姓名', '')), [])
                     if _rec_entries:
                         _badge_html_parts = ''.join(
                             f'<span style="display:inline-block;font-size:0.72rem;'

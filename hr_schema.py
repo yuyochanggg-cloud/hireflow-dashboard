@@ -90,6 +90,26 @@ STAGE_ICON  = {s[0]: s[2] for s in STAGES}
 STAGE_BG    = {s[0]: s[3] for s in STAGES}
 STAGE_FG    = {s[0]: s[4] for s in STAGES}
 
+# ── Grade（AI綜合推薦度）徽章顏色 —— 單一權威來源 ─────────────────────
+# 2026-07-14 Fable設計審查前，app.py跟dashboard.py各自重複定義了一份、
+# 顏色還互相打架（Grade B在app.py是藍色系、dashboard.py是靛紫色系）。
+# 收斂結論：跟隨系統主色（藍），dashboard.py那份靛紫版本淘汰。
+GRADE_META = {
+    "A": {"bg": "#fffbeb", "fg": "#92400e", "border": "#f59e0b", "icon": "🏆"},
+    "B": {"bg": "#eff6ff", "fg": "#1e40af", "border": "#3b82f6", "icon": "✅"},
+    "C": {"bg": "#f3f4f6", "fg": "#374151", "border": "#9ca3af", "icon": "📋"},
+}
+GRADE_DEFAULT = {"bg": "#f8fafc", "fg": "#475569", "border": "#9ca3af", "icon": "📋"}
+
+
+def grade_badge_html(grade: str) -> str:
+    """小型圓角徽章（適合看板卡片、清單列這類空間有限的地方）。"""
+    m = GRADE_META.get(grade, GRADE_DEFAULT)
+    return (f'<span style="background:{m["bg"]};color:{m["fg"]};'
+            f'border:1.5px solid {m["border"]};border-radius:4px;'
+            f'padding:1px 5px;font-weight:800;font-size:0.68rem;">'
+            f'{m["icon"]}{grade}</span>')
+
 # ── 「流程狀態」中文文字 ↔ UI stage key 映射（來源：dashboard.py）──────────
 FLOW_TO_STAGE = {
     "初篩完成":   "screening",

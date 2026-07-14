@@ -40,38 +40,41 @@ st.set_page_config(
 )
 
 # ── CSS ───────────────────────────────────────────────────────
+from theme import inject_theme, render_brand_header
+inject_theme()
+
+# ── Design tokens（2026-07-14起：改為引用theme.py共用的顏色/字體/圓角/陰影，
+#    這裡的變數名稱維持不變只是換成alias，全檔既有的 var(--p)/var(--text)/...
+#    用法都不用改，只有:root宣告這裡換成指到共用token）────────────────────
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=JetBrains+Mono:wght@400;500;700&display=swap');
-
-/* ── Design tokens ────────────────────────────────────── */
 :root {
-  --p:       #4f46e5;   /* indigo-600  — primary     */
-  --p-lite:  #e0e7ff;   /* indigo-100  — tint        */
-  --p-dark:  #3730a3;   /* indigo-800  — hover/dark  */
-  --accent:  #818cf8;   /* indigo-400  — light accent */
+  --p:       var(--c-primary);
+  --p-lite:  var(--c-primary-lite);
+  --p-dark:  var(--c-primary-dark);
+  --accent:  var(--c-accent);
 
-  --ok:      #059669;  --ok-bg:   #ecfdf5;  --ok-bd:   #6ee7b7;
-  --warn:    #d97706;  --warn-bg: #fffbeb;  --warn-bd: #fcd34d;
-  --err:     #dc2626;  --err-bg:  #fef2f2;  --err-bd:  #fca5a5;
+  --ok:      var(--c-ok);      --ok-bg:   var(--c-ok-bg);      --ok-bd:   var(--c-ok-border);
+  --warn:    var(--c-warn);    --warn-bg: var(--c-warn-bg);    --warn-bd: var(--c-warn-border);
+  --err:     var(--c-err);     --err-bg:  var(--c-err-bg);     --err-bd:  var(--c-err-border);
 
-  --text:    #111827;
-  --muted:   #6b7280;
-  --border:  #e5e7eb;
-  --surface: #f9fafb;
-  --surf-2:  #f3f4f6;
-  --white:   #ffffff;
+  --text:    var(--c-text);
+  --muted:   var(--c-text-muted);
+  --border:  var(--c-border);
+  --surface: var(--c-surface);
+  --surf-2:  var(--c-surface-2);
+  --white:   var(--c-card-bg);
 
-  --sh-xs:  0 1px 2px rgba(0,0,0,.06);
-  --sh-sm:  0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.04);
-  --sh-md:  0 4px 12px rgba(0,0,0,.08), 0 2px 4px rgba(0,0,0,.04);
-  --sh-p:   0 4px 14px rgba(79,70,229,.28);
+  --sh-xs:  var(--shadow-sm);
+  --sh-sm:  var(--shadow-sm);
+  --sh-md:  var(--shadow-md);
+  --sh-p:   var(--shadow-btn);
 
-  --r-sm: 7px; --r: 10px; --r-lg: 14px;
+  --r-sm: var(--radius); --r: var(--radius); --r-lg: var(--radius-lg);
 
-  --font-d: "Outfit", system-ui, sans-serif;
-  --font-b: "DM Sans", system-ui, sans-serif;
-  --font-m: "JetBrains Mono", monospace;
+  --font-d: var(--font-ui);
+  --font-b: var(--font-ui);
+  --font-m: var(--font-data);
 }
 
 /* ── Base ─────────────────────────────────────────────── */
@@ -240,11 +243,11 @@ hr { border-color: var(--border) !important; margin: 1.5rem 0 !important; }
 
 /* ── Sidebar ──────────────────────────────────────────── */
 [data-testid="stSidebar"] {
-  background: #0c1220 !important;
-  border-right: 1px solid #1a2540 !important;
+  background: var(--sb-bg) !important;
+  border-right: 1px solid var(--sb-border) !important;
 }
-[data-testid="stSidebar"] * { color: #94a3b8 !important; }
-[data-testid="stSidebar"] hr { border-color: #1e293b !important; }
+[data-testid="stSidebar"] * { color: var(--sb-muted) !important; }
+[data-testid="stSidebar"] hr { border-color: var(--sb-border) !important; }
 
 /* Nav items — hide radio circles */
 [data-testid="stSidebar"] [data-testid="stRadio"] label > div:first-child,
@@ -258,25 +261,25 @@ hr { border-color: var(--border) !important; margin: 1.5rem 0 !important; }
   font-size: 0.875rem !important;
   font-weight: 500 !important;
   font-family: var(--font-b) !important;
-  color: #94a3b8 !important;
+  color: var(--sb-muted) !important;
   cursor: pointer !important;
   transition: background .15s, color .15s !important;
   margin-bottom: 2px !important;
 }
 [data-testid="stSidebar"] [data-testid="stRadio"] label:hover {
-  background: #1a2540 !important;
-  color: #e2e8f0 !important;
+  background: var(--sb-surface2) !important;
+  color: var(--sb-text) !important;
 }
 [data-testid="stSidebar"] [data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked),
 [data-testid="stSidebar"] [data-testid="stRadio"] label:has([aria-checked="true"]) {
-  background: #1a2540 !important;
-  color: #c7d2fe !important;
+  background: var(--sb-surface2) !important;
+  color: var(--sb-text) !important;
   border-left: 3px solid var(--accent) !important;
 }
 
 /* Sidebar caption / small text */
 [data-testid="stSidebar"] [data-testid="stText"] small,
-[data-testid="stSidebar"] small { color: #475569 !important; }
+[data-testid="stSidebar"] small { color: var(--sb-muted) !important; }
 
 /* ── Scrollbar ────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
@@ -315,12 +318,10 @@ CONFIG_FILE       = "gsheet_config.json"   # shared with sync_to_gsheet.py
 from hr_schema import STAGES, STAGE_KEYS, STAGE_LABEL, STAGE_ICON, STAGE_BG, STAGE_FG
 from sync_queue import load_pending as _load_pending_sync
 
-GRADE_META = {
-    # grade: (bg, text, border, icon)
-    "A": ("#fffbeb", "#78350f", "#f59e0b", "🏆"),  # amber
-    "B": ("#ede9fe", "#3730a3", "#6366f1", "✅"),  # indigo
-    "C": ("#f3f4f6", "#374151", "#9ca3af", "📋"),  # slate
-}
+# Grade 顏色權威來源在 hr_schema.py（GRADE_META），這裡轉成既有程式碼慣用的
+# (bg, text, border, icon) tuple 形狀，呼叫端不用改。
+from hr_schema import GRADE_META as _GRADE_META_SRC
+GRADE_META = {k: (v["bg"], v["fg"], v["border"], v["icon"]) for k, v in _GRADE_META_SRC.items()}
 RESULT_LABEL = {"pending": "待定", "pass": "通過", "fail": "未通過"}
 RESULT_COLOR = {"pending": "#d97706", "pass": "#059669", "fail": "#dc2626"}
 WD_ZH = ["一", "二", "三", "四", "五", "六", "日"]
@@ -2180,10 +2181,10 @@ if not db_ok():
 # Sidebar navigation
 with st.sidebar:
     st.markdown(
-        '<div style="font-family:\'Outfit\',sans-serif;font-size:1.35rem;font-weight:800;'
-        'letter-spacing:-.03em;color:#f1f5f9;margin-bottom:2px;line-height:1.1;">'
+        '<div style="font-family:var(--font-ui);font-size:1.35rem;font-weight:800;'
+        'letter-spacing:-.03em;color:var(--sb-text);margin-bottom:2px;line-height:1.1;">'
         '🚀 HireFlow</div>'
-        '<div style="font-size:0.68rem;font-weight:500;color:#475569;'
+        '<div style="font-size:0.68rem;font-weight:500;color:var(--sb-muted);'
         'letter-spacing:.08em;text-transform:uppercase;margin-bottom:18px;">'
         'ECLIFE · 招募任用儀表板</div>',
         unsafe_allow_html=True,
@@ -2235,6 +2236,7 @@ _PAGE_META = {
 }
 
 def _page_header(page_key: str):
+    render_brand_header("HireFlow 招募儀表板")
     title, subtitle = _PAGE_META.get(page_key, (page_key, ""))
     st.title(title)
     if subtitle:
