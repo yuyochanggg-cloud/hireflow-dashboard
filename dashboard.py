@@ -1077,20 +1077,38 @@ def page_kanban():
         st.info("目前無候選人在招募流程中。")
         return
 
-    # 2026-07-14 第三輪重設計（Fable）：招募是陡漏斗（10-50人進來，過了約面試
-    # 通常只剩0-5人），塞進「固定5欄」網格數學上就註定截斷/擠/大片空白——
-    # 放棄「階段=實體欄位」，改成「職缺標題列旁一條階段人數摘要＋底下全寬
-    # 候選人列」。全貌由摘要條保留，明細改一維列表就不會再有欄寬不夠的問題。
+    # 2026-07-14 第四輪：使用者確認還是想要「階段=實體欄位」的並排格局
+    # （比較看得出來誰卡在哪），改回固定5欄；但這輪要把前幾輪暴露的三個
+    # 真問題解掉：字級太小難讀、note icon跟popover內建箭頭擠在一起、
+    # 空欄位只留一條孤伶伶的「—」看起來像斷欄。
     st.markdown("""
 <style>
-.st-key-kb_row [data-testid="stVerticalBlockBorderWrapper"] > div { padding: 6px 12px !important; }
-.st-key-kb_row [data-testid="stVerticalBlock"] { gap: 0.3rem !important; }
+.st-key-kb_card [data-testid="stVerticalBlockBorderWrapper"] > div { padding: 8px 10px !important; }
+.st-key-kb_card [data-testid="stVerticalBlock"] { gap: 0.35rem !important; }
+.st-key-kb_card [data-testid="stButton"] button { padding: 3px 8px !important; }
 .st-key-kb_job [data-testid="stVerticalBlockBorderWrapper"] > div { padding: 10px 16px !important; }
 </style>
 """, unsafe_allow_html=True)
 
-    # ── 共用：渲染單一候選人列（全寬，不再受限於窄欄位）──────────
-    def _kb_row(c, jid, sk):
+    # 第一欄放職缺名稱（row label），其餘每欄對應一個階段
+    _COL_WIDTHS = [1.4] + [1] * len(BOARD_STAGES)
+
+    # ── 階段表頭：整頁只出現一次，底下每個職缺共用同一組欄位對齊 ──────
+    _hdr_cols = st.columns(_COL_WIDTHS)
+    _hdr_cols[0].markdown(
+        '<div style="font-size:var(--fs-xs);font-weight:800;color:#94a3b8;">職缺</div>',
+        unsafe_allow_html=True,
+    )
+    for _hc, (sk, label, icon, bg, fg) in zip(_hdr_cols[1:], BOARD_STAGES):
+        _hc.markdown(
+            f'<div style="background:{bg};color:{fg};border-radius:4px;padding:4px 6px;'
+            f'font-size:var(--fs-xs);font-weight:800;text-align:center;">{icon} {label}</div>',
+            unsafe_allow_html=True,
+        )
+    st.write("")
+
+    # ── 共用：渲染單張候選人卡片 ──────────────────────────
+    def _kb_card(c, jid, sk):
         cid    = c["id"]
         name   = c.get("name", "?")
         grade  = c.get("grade", "C")
@@ -1103,55 +1121,57 @@ def page_kanban():
         next_s = [s for s in STAGE_KEYS[cur_i+1:cur_i+2] if s != "rejected"]
         has_rej = sk not in ("hired", "rejected")
         bpfx   = f"kb_{jid}_{sk}_{cid}"
-        _, s_label, s_icon, s_bg, s_fg = next((s for s in STAGES if s[0] == sk), STAGES[0])
 
-        with st.container(border=True, key=f"kb_row_{bpfx}"):
-            rc1, rc2, rc3, rc4, rc5 = st.columns([1.3, 2.4, 2, 3, 0.6])
-            rc1.markdown(
-                f'<span style="background:{s_bg};color:{s_fg};border-radius:4px;'
-                f'padding:2px 8px;font-size:var(--fs-xs);font-weight:600;white-space:nowrap;">'
-                f'{s_icon} {s_label}</span>',
-                unsafe_allow_html=True,
-            )
-            rc2.markdown(
-                f'<div style="font-size:var(--fs-sm);line-height:1.5;">{_html.escape(name)}&nbsp;'
+        with st.container(border=True, key=f"kb_card_{bpfx}"):
+            # 姓名+等第：字級拉到 --fs-sm（可讀），允許換行，不再用ellipsis
+            # 硬裁字——裁字才是使用者真正在意的「看不到人在哪」的根源。
+            st.markdown(
+                f'<div style="font-size:var(--fs-sm);line-height:1.4;">'
+                f'{_html.escape(name)}&nbsp;'
                 f'<span style="background:{gm[0]};color:{gm[1]};border:1px solid {gm[2]};'
-                f'border-radius:4px;font-size:var(--fs-xs);padding:0 4px;">{gm[3]}{grade}</span></div>',
+                f'border-radius:4px;font-size:var(--fs-xs);padding:0 4px;white-space:nowrap;">'
+                f'{gm[3]}{grade}</span></div>',
                 unsafe_allow_html=True,
             )
-            rc3.caption(f"{days}天 · {source}" if source else f"{days}天")
-            with rc4:
-                if sk == "hired":
-                    # 已通知是看板的終點站，改成跳去到職流程頁定位到這個人，
-                    # 避免卡在這裡沒有任何操作。
-                    if st.button("→ 到職追蹤", key=f"{bpfx}_goto_onboard", use_container_width=True):
-                        st.session_state['_pending_nav'] = "✅ 到職流程"
-                        st.session_state['_onboard_focus_cid'] = cid
-                        st.rerun()
-                else:
-                    btns = []
-                    if next_s:
-                        btns.append((f"→ {STAGE_LABEL[next_s[0]]}", next_s[0]))
-                    if has_rej:
-                        btns.append(("✕ 結案", "rejected"))
-                    if btns:
-                        bcols = st.columns(len(btns))
-                        for bi, (blabel, target) in enumerate(btns):
-                            if bcols[bi].button(blabel, key=f"{bpfx}_{target}", use_container_width=True):
-                                if update_stage(cid, target):
-                                    st.toast(f"{name} 已結案" if target == "rejected" else f"✅ {name} → {STAGE_LABEL[target]}")
-                                    st.rerun()
-            with rc5:
-                with st.popover("📝", use_container_width=True):
-                    new_note = st.text_area(
-                        "備註", value=note, key=f"{bpfx}_note_ta", label_visibility="collapsed",
-                    )
-                    if st.button("儲存", key=f"{bpfx}_note_save"):
-                        if update_note(cid, new_note):
-                            st.toast(f"✅ {name} 備註已更新")
+            st.caption(f"{days}天 · {source}" if source else f"{days}天")
+
+            if sk == "hired":
+                # 已通知是看板的終點站，改成跳去到職流程頁定位到這個人，
+                # 避免卡在這裡沒有任何操作。
+                if st.button("→ 到職追蹤", key=f"{bpfx}_goto_onboard", use_container_width=True):
+                    st.session_state['_pending_nav'] = "✅ 到職流程"
+                    st.session_state['_onboard_focus_cid'] = cid
+                    st.rerun()
+            else:
+                if next_s:
+                    if st.button(f"→ {STAGE_LABEL[next_s[0]]}", key=f"{bpfx}_{next_s[0]}", use_container_width=True):
+                        if update_stage(cid, next_s[0]):
+                            st.toast(f"✅ {name} → {STAGE_LABEL[next_s[0]]}")
+                            st.rerun()
+                if has_rej:
+                    if st.button("✕ 結案", key=f"{bpfx}_rejected", use_container_width=True):
+                        if update_stage(cid, "rejected"):
+                            st.toast(f"{name} 已結案")
                             st.rerun()
 
-    _stage_order = {sk: i for i, (sk, *_r) in enumerate(BOARD_STAGES)}
+            # 備註：獨立一整行、不強制撐滿寬度，icon跟popover內建的箭頭
+            # 才有空間並排、不會疊在一起。
+            if st.button("📝 備註" + (" ●" if note else ""), key=f"{bpfx}_note_toggle",
+                         help=note if note else "新增備註"):
+                st.session_state[f"{bpfx}_note_open"] = not st.session_state.get(f"{bpfx}_note_open", False)
+            if st.session_state.get(f"{bpfx}_note_open"):
+                new_note = st.text_area("備註", value=note, key=f"{bpfx}_note_ta", label_visibility="collapsed")
+                if st.button("儲存", key=f"{bpfx}_note_save"):
+                    if update_note(cid, new_note):
+                        st.session_state[f"{bpfx}_note_open"] = False
+                        st.toast(f"✅ {name} 備註已更新")
+                        st.rerun()
+
+    _EMPTY_SLOT = (
+        '<div style="border:1.5px dashed #e2e8f0;border-radius:8px;min-height:56px;'
+        'display:flex;align-items:center;justify-content:center;color:#cbd5e1;'
+        'font-size:var(--fs-xs);">—</div>'
+    )
     for job in all_jobs_with_data:
         jid    = job["id"]
         jtitle = job["title"]
@@ -1161,30 +1181,26 @@ def page_kanban():
         if not active and not rejected_list:
             continue
 
-        # 階段人數摘要條：5個階段永遠都在，0人也顯示，不用實體欄位就能看全貌
-        summary = " ｜ ".join(
-            f'<span style="color:{fg if len([c for c in active if c.get("stage")==sk]) else "#cbd5e1"};">'
-            f'{icon}{len([c for c in active if c.get("stage")==sk])}</span>'
-            for sk, label, icon, bg, fg in BOARD_STAGES
-        )
-
         with st.container(border=True, key=f"kb_job_{jid}"):
-            st.markdown(
-                f'<div style="display:flex;justify-content:space-between;align-items:baseline;'
-                f'flex-wrap:wrap;gap:6px;">'
-                f'<div><span style="font-weight:800;font-size:var(--fs-base);">{_html.escape(jtitle)}</span>'
-                f'<span style="font-size:var(--fs-xs);font-weight:600;color:#6b7280;margin-left:8px;">'
-                f'{len(active)} 人</span></div>'
-                f'<div style="font-size:var(--fs-xs);font-weight:700;">{summary}</div></div>',
+            cols = st.columns(_COL_WIDTHS)
+            cols[0].markdown(
+                f'<div style="font-weight:800;font-size:var(--fs-sm);line-height:1.3;">'
+                f'{_html.escape(jtitle)}</div>'
+                f'<div style="font-size:var(--fs-xs);font-weight:600;color:#6b7280;">{len(active)} 人</div>',
                 unsafe_allow_html=True,
             )
-            sorted_active = sorted(active, key=lambda c: _stage_order.get(c.get("stage"), 99))
-            for c in sorted_active:
-                _kb_row(c, jid, c.get("stage"))
+            for i, (sk, label, icon, bg, fg) in enumerate(BOARD_STAGES):
+                with cols[i + 1]:
+                    stage_list = [c for c in active if c.get("stage") == sk]
+                    if not stage_list:
+                        st.markdown(_EMPTY_SLOT, unsafe_allow_html=True)
+                        continue
+                    for c in stage_list:
+                        _kb_card(c, jid, sk)
             if show_rejected and rejected_list:
                 with st.expander(f"已結案（{len(rejected_list)}）", expanded=False):
                     for c in rejected_list:
-                        _kb_row(c, jid, "rejected")
+                        _kb_card(c, jid, "rejected")
 
 # ══════════════════════════════════════════════════════════════
 # PAGE 3 — 候選人
