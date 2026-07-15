@@ -600,6 +600,7 @@ def fetch_all_hires() -> list:
             "candidate_id":    cid,
             "job_id":          row.get("job_id", ""),
             "start_date":      row.get("預計報到日", ""),
+            "actual_start_date": row.get("實際報到日", "") or None,
             "employment_type": row.get("聘用類型", "") or "全職",
             "proposed_salary": row.get("薪資（月）", "") or None,
             # 06_員工主檔 checklist 欄位直接用中文 key
@@ -786,6 +787,7 @@ def save_hire(data: dict) -> bool:
             "candidate_id":   cid,
             "job_id":         data.get("job_id", data.get("job_opening_id", "")),
             "預計報到日":     str(data.get("start_date", "")),
+            "實際報到日":     str(data.get("actual_start_date", "") or ""),
             "薪資（月）":     str(data.get("proposed_salary", "") or ""),
             "錄取通知寄出":   _b(data.get("錄取通知寄出", "")),
             "銀行帳號已收":   _b(data.get("銀行帳號已收", "")),
@@ -1048,6 +1050,9 @@ def page_kanban():
 
     all_cands = fetch_all_candidates()
     all_jobs  = fetch_all_jobs()
+    # 已通知(hired)且已經標記「實際報到」的人，代表招募任務已完成，不該再
+    # 佔招募看板的版面——到職追蹤頁那邊仍然看得到，只是從這裡消失。
+    _reported_cids = {h.get("candidate_id") for h in fetch_all_hires() if h.get("actual_start_date")}
 
     show_rejected = _col_rej.checkbox("包含已結案候選人", value=False, key="kb_rejected")
 
@@ -1061,6 +1066,8 @@ def page_kanban():
     no_job = []
     for c in all_cands:
         if c.get("stage") not in KANBAN_STAGES:
+            continue
+        if c.get("stage") == "hired" and str(c.get("id")) in _reported_cids:
             continue
         jid = str(c.get("job_opening_id", "")).strip()
         if jid:
@@ -1083,10 +1090,25 @@ def page_kanban():
     # 空欄位只留一條孤伶伶的「—」看起來像斷欄。
     st.markdown("""
 <style>
-.st-key-kb_card [data-testid="stVerticalBlockBorderWrapper"] > div { padding: 8px 10px !important; }
-.st-key-kb_card [data-testid="stVerticalBlock"] { gap: 0.35rem !important; }
-.st-key-kb_card [data-testid="stButton"] button { padding: 3px 8px !important; }
-.st-key-kb_job [data-testid="stVerticalBlockBorderWrapper"] > div { padding: 10px 16px !important; }
+[class*="st-key-kb_card"] {
+  padding: 8px 10px !important; border-radius: 10px !important; gap: 0.35rem !important;
+}
+[class*="st-key-kb_card"] [data-testid="stButton"] button {
+  padding: 3px 8px !important; border-radius: 7px !important;
+}
+/* 三顆動作按鈕依語意上色，不再全部長一樣的灰色框 */
+[class*="st-key-kb_card"] [data-testid="stHorizontalBlock"] > div:nth-child(1) [data-testid="stButton"] button {
+  border-color: var(--c-accent) !important; color: var(--c-primary) !important;
+}
+[class*="st-key-kb_card"] [data-testid="stHorizontalBlock"] > div:nth-child(2) [data-testid="stButton"] button {
+  border-color: var(--c-err-border) !important; color: var(--c-err) !important;
+}
+[class*="st-key-kb_card"] [data-testid="stHorizontalBlock"] > div:nth-child(3) [data-testid="stButton"] button {
+  color: var(--c-text-muted) !important;
+}
+[class*="st-key-kb_job"] {
+  padding: 10px 16px !important; border-radius: 12px !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -1832,6 +1854,21 @@ def page_onboarding():
                         update_stage(cid, "hired")
                         st.toast(f"🎉 {name} 所有流程完成，已標記為入職！")
                     st.rerun()
+
+            # 已通知的人不會自動從招募看板消失（看板只知道stage，不知道人
+            # 有沒有真的來上班）——這裡讓HR確認「已報到」後才把人從招募
+            # 看板移除，到職追蹤這邊仍然留著繼續看。
+            if stage == "hired":
+                if h.get("actual_start_date"):
+                    st.caption(f"✅ 已報到（{h['actual_start_date']}），已從招募看板移除")
+                else:
+                    if st.button("✅ 標記已報到（從招募看板移除）", key=f"ob_{cid}_actual_start"):
+                        new_h2 = dict(h)
+                        new_h2["candidate_id"] = cid
+                        new_h2["actual_start_date"] = date.today().isoformat()
+                        if save_hire(new_h2):
+                            st.toast(f"✅ {name} 已標記報到")
+                            st.rerun()
 
             # Offer 薪資資訊
             with st.expander("薪資 / Offer 詳情", expanded=False):
