@@ -1144,10 +1144,10 @@ def page_kanban():
         st.info("目前無候選人在招募流程中。")
         return
 
-    # 2026-07-14 第四輪：使用者確認還是想要「階段=實體欄位」的並排格局
-    # （比較看得出來誰卡在哪），改回固定5欄；但這輪要把前幾輪暴露的三個
-    # 真問題解掉：字級太小難讀、note icon跟popover內建箭頭擠在一起、
-    # 空欄位只留一條孤伶伶的「—」看起來像斷欄。
+    # P1版面重排（Fable架構審查第2點）：職缺名稱從左側row label改成區塊上方
+    # 整寬標題，把原本被它佔掉的一整欄寬度還給6個階段欄；每個階段欄額外用
+    # bordered container包起來，卡片才有明確的欄位邊框，不會有「看不出來卡片
+    # 屬於哪一欄」的問題。
     st.markdown("""
 <style>
 [class*="st-key-kb_card"] {
@@ -1170,19 +1170,15 @@ def page_kanban():
 [class*="st-key-kb_job"] {
   padding: 10px 16px !important; border-radius: 12px !important;
 }
+[class*="st-key-kb_col"] {
+  padding: 6px 6px !important; border-radius: 10px !important; background: #fafbfc !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
-    # 第一欄放職缺名稱（row label），其餘每欄對應一個階段
-    _COL_WIDTHS = [1.4] + [1] * len(BOARD_STAGES)
-
     # ── 階段表頭：整頁只出現一次，底下每個職缺共用同一組欄位對齊 ──────
-    _hdr_cols = st.columns(_COL_WIDTHS)
-    _hdr_cols[0].markdown(
-        '<div style="font-size:var(--fs-sm);font-weight:800;color:#94a3b8;">職缺</div>',
-        unsafe_allow_html=True,
-    )
-    for _hc, (sk, label, icon, bg, fg) in zip(_hdr_cols[1:], BOARD_STAGES):
+    _hdr_cols = st.columns(len(BOARD_STAGES))
+    for _hc, (sk, label, icon, bg, fg) in zip(_hdr_cols, BOARD_STAGES):
         _hc.markdown(
             f'<div style="background:{bg};color:{fg};border-radius:4px;padding:5px 6px;'
             f'font-size:var(--fs-sm);font-weight:800;text-align:center;">{icon} {label}</div>',
@@ -1278,21 +1274,33 @@ def page_kanban():
         rejected_list = [c for c in jcands if c.get("stage") == "rejected"]
 
         with st.container(border=True, key=f"kb_job_{jid}"):
-            cols = st.columns(_COL_WIDTHS)
-            cols[0].markdown(
-                f'<div style="font-weight:800;font-size:var(--fs-lg);line-height:1.3;">'
-                f'{_html.escape(jtitle)}</div>'
-                f'<div style="font-size:var(--fs-sm);font-weight:600;color:#6b7280;">{len(active)} 人</div>',
+            # 職缺名稱改成整寬標題（不再擠左側一欄），6個階段欄拿回原本被
+            # row label佔掉的寬度。
+            st.markdown(
+                f'<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:6px;">'
+                f'<span style="font-weight:800;font-size:var(--fs-lg);">{_html.escape(jtitle)}</span>'
+                f'<span style="font-size:var(--fs-sm);font-weight:600;color:#6b7280;">{len(active)} 人</span>'
+                f'</div>',
                 unsafe_allow_html=True,
             )
+            cols = st.columns(len(BOARD_STAGES))
             for i, (sk, label, icon, bg, fg) in enumerate(BOARD_STAGES):
-                with cols[i + 1]:
+                with cols[i]:
                     stage_list = [c for c in active if c.get("stage") == sk]
-                    if not stage_list:
-                        st.markdown(_EMPTY_SLOT, unsafe_allow_html=True)
-                        continue
-                    for c in stage_list:
-                        _kb_card(c, jid, sk)
+                    with st.container(border=True, key=f"kb_col_{jid}_{sk}"):
+                        # 每欄頂端一個對應階段色的計數色塊，卡片跟欄位的歸屬
+                        # 靠「垂直對齊表頭」+「顏色」雙重編碼，不用再看row label。
+                        st.markdown(
+                            f'<div style="background:{bg};color:{fg};border-radius:999px;'
+                            f'padding:2px 0;text-align:center;font-weight:800;'
+                            f'font-size:var(--fs-xs);margin-bottom:6px;">{len(stage_list)}</div>',
+                            unsafe_allow_html=True,
+                        )
+                        if not stage_list:
+                            st.markdown(_EMPTY_SLOT, unsafe_allow_html=True)
+                            continue
+                        for c in stage_list:
+                            _kb_card(c, jid, sk)
             if show_rejected and rejected_list:
                 with st.expander(f"已結案（{len(rejected_list)}）", expanded=False):
                     for c in rejected_list:
