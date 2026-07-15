@@ -1094,7 +1094,8 @@ def page_kanban():
   padding: 8px 10px !important; border-radius: 10px !important; gap: 0.35rem !important;
 }
 [class*="st-key-kb_card"] [data-testid="stButton"] button {
-  padding: 3px 8px !important; border-radius: 7px !important;
+  padding: 0px 4px !important; border-radius: 6px !important;
+  font-size: var(--fs-xs) !important; min-height: 1.6rem !important;
 }
 /* 三顆動作按鈕依語意上色，不再全部長一樣的灰色框 */
 [class*="st-key-kb_card"] [data-testid="stHorizontalBlock"] > div:nth-child(1) [data-testid="stButton"] button {
@@ -1118,13 +1119,13 @@ def page_kanban():
     # ── 階段表頭：整頁只出現一次，底下每個職缺共用同一組欄位對齊 ──────
     _hdr_cols = st.columns(_COL_WIDTHS)
     _hdr_cols[0].markdown(
-        '<div style="font-size:var(--fs-xs);font-weight:800;color:#94a3b8;">職缺</div>',
+        '<div style="font-size:var(--fs-sm);font-weight:800;color:#94a3b8;">職缺</div>',
         unsafe_allow_html=True,
     )
     for _hc, (sk, label, icon, bg, fg) in zip(_hdr_cols[1:], BOARD_STAGES):
         _hc.markdown(
-            f'<div style="background:{bg};color:{fg};border-radius:4px;padding:4px 6px;'
-            f'font-size:var(--fs-xs);font-weight:800;text-align:center;">{icon} {label}</div>',
+            f'<div style="background:{bg};color:{fg};border-radius:4px;padding:5px 6px;'
+            f'font-size:var(--fs-sm);font-weight:800;text-align:center;">{icon} {label}</div>',
             unsafe_allow_html=True,
         )
     st.write("")
@@ -1150,10 +1151,10 @@ def page_kanban():
             # 硬裁字——裁字才是使用者真正在意的「看不到人在哪」的根源。
             # 天數/來源不再佔一整行，改成滑鼠停留在姓名上的title提示。
             st.markdown(
-                f'<div style="font-size:var(--fs-sm);line-height:1.4;" title="{meta}">'
+                f'<div style="font-size:var(--fs-base);font-weight:600;line-height:1.4;" title="{meta}">'
                 f'{_html.escape(name)}&nbsp;'
                 f'<span style="background:{gm[0]};color:{gm[1]};border:1px solid {gm[2]};'
-                f'border-radius:4px;font-size:var(--fs-xs);padding:0 4px;white-space:nowrap;">'
+                f'border-radius:4px;font-size:var(--fs-sm);padding:0 4px;white-space:nowrap;">'
                 f'{gm[3]}{grade}</span></div>',
                 unsafe_allow_html=True,
             )
@@ -1211,9 +1212,9 @@ def page_kanban():
         with st.container(border=True, key=f"kb_job_{jid}"):
             cols = st.columns(_COL_WIDTHS)
             cols[0].markdown(
-                f'<div style="font-weight:800;font-size:var(--fs-sm);line-height:1.3;">'
+                f'<div style="font-weight:800;font-size:var(--fs-lg);line-height:1.3;">'
                 f'{_html.escape(jtitle)}</div>'
-                f'<div style="font-size:var(--fs-xs);font-weight:600;color:#6b7280;">{len(active)} 人</div>',
+                f'<div style="font-size:var(--fs-sm);font-weight:600;color:#6b7280;">{len(active)} 人</div>',
                 unsafe_allow_html=True,
             )
             for i, (sk, label, icon, bg, fg) in enumerate(BOARD_STAGES):
