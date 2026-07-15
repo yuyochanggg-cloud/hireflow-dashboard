@@ -1091,7 +1091,9 @@ def page_kanban():
         else:
             no_job.append(c)
 
-    all_jobs_with_data = [j for j in all_jobs if j["id"] in job_cands]
+    # 所有開缺都列出來（即使目前還沒有人推進到「已推薦主管」以後的階段），
+    # 讓HR一眼看出「這個職缺目前完全沒人在跑」，不是只顯示有進度的職缺。
+    all_jobs_with_data = [j for j in all_jobs if j.get("status") == "open" or j["id"] in job_cands]
     if no_job:
         all_jobs_with_data.append({"id": "__none__", "title": "（未指定職缺）", "status": "open"})
         job_cands["__none__"] = no_job
@@ -1232,8 +1234,6 @@ def page_kanban():
         jcands = job_cands.get(jid, [])
         active = [c for c in jcands if c.get("stage") in BOARD_KEYS]
         rejected_list = [c for c in jcands if c.get("stage") == "rejected"]
-        if not active and not rejected_list:
-            continue
 
         with st.container(border=True, key=f"kb_job_{jid}"):
             cols = st.columns(_COL_WIDTHS)
