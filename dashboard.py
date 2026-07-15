@@ -663,14 +663,14 @@ def fetch_all_hires() -> list:
     return result
 
 def fetch_screening_stats() -> dict:
-    """加總「07_AI初篩統計」（app.py每批次初篩完成就append一列），算出
-    AI總共初篩了多少履歷——這個數字原本只存在app.py本機檔案，Sheets讀不到。
-    這張表可能還不存在（還沒有任何一批用新版app.py跑過），沒有就回傳0。
+    """AI總共初篩了多少履歷／幾份合格。03_應徵主檔本來就是「每份被AI初篩過的
+    履歷各一列」，AI初篩狀態欄位就有合格/不合格，不用等新的07_AI初篩統計表
+    才有數字——直接數03_應徵主檔即可回溯到最早的批次，不是只從今天開始累計。
     """
     data = _load_all_sheets()
-    rows = data.get("07_AI初篩統計", [])
-    total = sum(int(r.get("初篩份數") or 0) for r in rows)
-    passed = sum(int(r.get("合格數") or 0) for r in rows)
+    rows = data.get("03_應徵主檔", [])
+    total = len(rows)
+    passed = sum(1 for r in rows if r.get("AI初篩狀態") == "合格")
     return {"total_screened": total, "total_passed": passed}
 
 def _candidates_with_join(rows: list, jobs: list) -> list:
@@ -1022,8 +1022,6 @@ def page_overview():
         ("✅ 已面試",     sum(1 for c in all_cands if _ever_reached(c, "interviewed"))),
         ("🎉 已通知",     sum(1 for c in all_cands if c.get("stage") == "hired")),
     ]
-    if _stats["total_screened"] == 0:
-        st.caption("💡 「AI初篩」「AI合格」這兩格從今天開始累計——用app.py跑新批次後才會有數字，之前的批次沒有回溯記錄。")
     f_cols = st.columns(len(_funnel_steps))
     _prev_n = None
     for col, (label, n) in zip(f_cols, _funnel_steps):
