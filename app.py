@@ -150,8 +150,13 @@ h3 { font-weight: 700 !important; letter-spacing: -.01em !important; }
    MAIN AREA
    ══════════════════════════════════════════════ */
 
-/* 候選人 Card container */
-[data-testid="stVerticalBlockBorderWrapper"] > div {
+/* 候選人 Card container ── Streamlit 1.57 拿掉了 stVerticalBlockBorderWrapper，
+   border=True 的 container 不再有專屬 testid，只能靠 key= 產生的
+   class="st-key-<key>" 鎖定；下面列出本檔所有 bordered card 的 key 前綴 */
+[class*="st-key-card_lib_"],
+[class*="st-key-card_cand_"],
+[class*="st-key-card_promo_"],
+[class*="st-key-card_job_"] {
   border: 1px solid var(--c-border) !important;
   border-radius: var(--radius) !important;
   box-shadow: var(--shadow-card) !important;
@@ -159,7 +164,10 @@ h3 { font-weight: 700 !important; letter-spacing: -.01em !important; }
   padding: 16px 20px !important;
   transition: box-shadow .18s ease, transform .18s ease !important;
 }
-[data-testid="stVerticalBlockBorderWrapper"] > div:hover {
+[class*="st-key-card_lib_"]:hover,
+[class*="st-key-card_cand_"]:hover,
+[class*="st-key-card_promo_"]:hover,
+[class*="st-key-card_job_"]:hover {
   box-shadow: var(--shadow-md) !important;
   transform: translateY(-1px) !important;
 }
@@ -2137,7 +2145,7 @@ def render_home_page():
         pending   = _pending_count(lib)
         accent    = "#15803d" if pass_rate >= 50 else ("#1e40af" if pass_rate >= 25 else "#92400e")
 
-        with st.container(border=True):
+        with st.container(border=True, key=f"card_lib_{idx}"):
             if st.session_state.get('_confirm_del_lib') == lib['jd_name']:
                 st.warning(f"確定刪除「{lib['jd_name']}」的履歷庫（{total} 人）？此動作無法復原，"
                            "但不影響已同步到 Google Sheets 的資料。")
@@ -3394,12 +3402,14 @@ def _render_results():
                 if str(d.get('104代碼')) == str(row.get('104代碼'))
             ]
             cand_data = original_data_match[0] if original_data_match else {}
+            # 預先取 code（container key 跟下面 checkbox key 都需要，早於 with 區塊定義；
+            # 沿用同一段程式碼裡checkbox已經在用的104代碼當唯一性依據，而不是
+            # paged_df.iterrows() 給的 idx——.iloc切片不保證index沒有重複值）
+            _code_raw = str(row.get('104代碼', ''))
 
-            with st.container(border=True):
+            with st.container(border=True, key=f"card_cand_{_code_raw}"):
 
                 # ── Layer 1：標題與整體匹配戰情區 ──────────────────────
-                # 預先取 code（checkbox key 需要，早於 col_h 定義）
-                _code_raw = str(row.get('104代碼', ''))
                 col_chk, col_h, col_m = st.columns([0.8, 4, 1])
                 with col_chk:
                     st.write("")   # 上方留白對齊
@@ -3893,7 +3903,7 @@ def _render_results():
                 _pc_name = _html_module.escape(_s2(_pc.get('真實姓名'), '?'))
                 _pc_stab = _s2(_pc.get('穩定度評估'), '未知')
                 _pc_stab_cfg = _pc_stab_cfg_map.get(_pc_stab, ('var(--c-surface-2)', 'var(--c-text-muted)'))
-                with st.container(border=True):
+                with st.container(border=True, key=f"card_promo_{_pc_code}"):
                     _pc_cur_sel = st.checkbox(
                         "📧 納入本次推薦", key=f"rej_email_sel_{_pc_code}",
                         value=_rej_persist.get(_pc_code, True),
@@ -4195,7 +4205,7 @@ with _tab_dashboard:
 
         st.divider()
 
-        for _jname in _all_jobs:
+        for _jidx, _jname in enumerate(_all_jobs):
             _job_entries = [l for l in _dash_logs if l.get('job_name') == _jname]
             _job_cands_set  = []
             _seen_cands     = set()
@@ -4208,7 +4218,7 @@ with _tab_dashboard:
                 l.get('recipient_name','') for l in _job_entries if l.get('recipient_name')
             ))
             _last_sent = max(l.get('sent_at','') for l in _job_entries)
-            with st.container(border=True):
+            with st.container(border=True, key=f"card_job_{_jidx}"):
                 _jc1, _jc2 = st.columns([3, 1])
                 with _jc1:
                     st.markdown(
