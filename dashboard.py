@@ -1151,12 +1151,14 @@ def page_kanban():
             # 硬裁字——裁字才是使用者真正在意的「看不到人在哪」的根源。
             # 天數/來源不再佔一整行，改成滑鼠停留在姓名上的title提示。
             st.markdown(
-                f'<div style="display:flex;align-items:center;flex-wrap:wrap;gap:5px;" title="{meta}">'
-                f'<span style="font-size:var(--fs-base);font-weight:600;line-height:1.4;">'
+                f'<div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;" title="{meta}">'
+                f'<span style="font-size:var(--fs-base);font-weight:600;line-height:1.6;">'
                 f'{_html.escape(name)}</span>'
-                f'<span style="background:{gm[0]};color:{gm[1]};border:1px solid {gm[2]};'
-                f'border-radius:4px;font-size:var(--fs-sm);padding:0 4px;line-height:1.5;'
-                f'flex-shrink:0;">{gm[3]}{grade}</span></div>',
+                f'<span style="display:inline-flex;align-items:center;gap:2px;'
+                f'background:{gm[0]};color:{gm[1]};border:1px solid {gm[2]};'
+                f'border-radius:4px;font-size:var(--fs-sm);line-height:1.6;'
+                f'padding:1px 6px;flex-shrink:0;">'
+                f'<span>{gm[3]}</span><span>{grade}</span></span></div>',
                 unsafe_allow_html=True,
             )
 
