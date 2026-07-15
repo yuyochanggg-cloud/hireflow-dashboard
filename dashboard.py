@@ -443,7 +443,7 @@ def _load_all_sheets() -> dict:
     if not sh:
         return {}
     names = ["01_職缺主檔", "02_候選人主檔", "03_應徵主檔",
-             "04_評分主檔", "05_面試主檔", "06_員工主檔"]
+             "04_評分主檔", "05_面試主檔", "06_員工主檔", "07_AI初篩統計"]
     result = {n: _sheet_to_dicts(sh, n) for n in names}
     # 若關鍵表（候選人/應徵）全空，代表可能是 429 快取污染，不存快取
     if not result.get("02_候選人主檔") and not result.get("03_應徵主檔"):
@@ -487,7 +487,7 @@ def backup_sheets_to_local() -> tuple:
     if not sh:
         return False, "無法連線至 Google Sheets，請確認驗證設定與 spreadsheet_id 是否正確"
     names = ["01_職缺主檔", "02_候選人主檔", "03_應徵主檔",
-             "04_評分主檔", "05_面試主檔", "06_員工主檔"]
+             "04_評分主檔", "05_面試主檔", "06_員工主檔", "07_AI初篩統計"]
     today_str = date.today().strftime("%Y-%m-%d")
     backup_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backups", today_str)
     try:
@@ -580,6 +580,9 @@ def fetch_all_candidates() -> list:
             "screening_notes": a.get("初篩判定", s.get("初篩判定", "")),
             "note":            a.get("備註", ""),
             "stage_updated_at": a.get("人才狀態更新日", ""),
+            # 結案前是卡在哪個階段（漏斗轉換率計算用：已結案的人流程狀態變成
+            # 「已結案」後，原本走到哪一步就看不出來了，靠這欄位回推）
+            "prestage":        FLOW_TO_STAGE.get(a.get("結案前階段", ""), ""),
         })
 
     # 候選人主檔裡有、但03_應徵主檔完全沒有對應列的人（極少見的邊界情況），
@@ -594,7 +597,7 @@ def fetch_all_candidates() -> list:
             "job_opening_id": "", "grade": "C", "stage": "screening",
             "created_at": c.get("初次進庫日期", ""), "stability": "", "commute": "",
             "highlights": "", "gaps": "", "screening_notes": "", "note": "",
-            "stage_updated_at": "",
+            "stage_updated_at": "", "prestage": "",
         })
     return result
 
@@ -658,6 +661,17 @@ def fetch_all_hires() -> list:
             "離職原因類別":    row.get("離職原因類別", ""),
         })
     return result
+
+def fetch_screening_stats() -> dict:
+    """加總「07_AI初篩統計」（app.py每批次初篩完成就append一列），算出
+    AI總共初篩了多少履歷——這個數字原本只存在app.py本機檔案，Sheets讀不到。
+    這張表可能還不存在（還沒有任何一批用新版app.py跑過），沒有就回傳0。
+    """
+    data = _load_all_sheets()
+    rows = data.get("07_AI初篩統計", [])
+    total = sum(int(r.get("初篩份數") or 0) for r in rows)
+    passed = sum(int(r.get("合格數") or 0) for r in rows)
+    return {"total_screened": total, "total_passed": passed}
 
 def _candidates_with_join(rows: list, jobs: list) -> list:
     job_map = {j["id"]: j["title"] for j in jobs}
@@ -959,6 +973,54 @@ def page_overview():
     m3.metric("本週面試",   len(this_week_ivs))
     m4.metric("已錄取",     sum(1 for c in all_cands if c.get("stage") == "hired"))
     m5.metric("開缺數",     sum(1 for j in all_jobs  if j.get("status") == "open"))
+
+    st.markdown("---")
+
+    # ── 招募漏斗：AI初篩→AI合格→HR推薦→主管推進→已面試→已通知 ──────
+    # Fable架構審查P2：使用者最想看的關鍵數據。「曾經到達過」用累計判斷
+    # （不是「目前正卡在」），已結案的人用「結案前階段」回推，不然一結案
+    # 就會從漏斗裡消失，數字對不起來。
+    st.markdown(
+        '<div style="font-weight:700;font-size:var(--fs-sm);color:var(--p);'
+        'text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">'
+        '🔻 招募漏斗</div>',
+        unsafe_allow_html=True,
+    )
+    _stats = fetch_screening_stats()
+    _stage_idx = {sk: i for i, sk in enumerate(STAGE_KEYS)}
+
+    def _ever_reached(c, stage_key):
+        stage = c.get("stage")
+        if stage == "rejected":
+            stage = c.get("prestage") or "screening"
+        return _stage_idx.get(stage, 0) >= _stage_idx.get(stage_key, 0)
+
+    _funnel_steps = [
+        ("🔍 AI初篩",     _stats["total_screened"]),
+        ("✅ AI合格",     _stats["total_passed"]),
+        ("👔 HR推薦主管", sum(1 for c in all_cands if _ever_reached(c, "recommended"))),
+        ("📨 主管推進",   sum(1 for c in all_cands if _ever_reached(c, "invited"))),
+        ("✅ 已面試",     sum(1 for c in all_cands if _ever_reached(c, "interviewed"))),
+        ("🎉 已通知",     sum(1 for c in all_cands if c.get("stage") == "hired")),
+    ]
+    if _stats["total_screened"] == 0:
+        st.caption("💡 「AI初篩」「AI合格」這兩格從今天開始累計——用app.py跑新批次後才會有數字，之前的批次沒有回溯記錄。")
+    f_cols = st.columns(len(_funnel_steps))
+    _prev_n = None
+    for col, (label, n) in zip(f_cols, _funnel_steps):
+        rate_html = ""
+        if _prev_n:
+            rate_html = (f'<div style="font-size:var(--fs-xs);color:#94a3b8;">'
+                         f'{(n / _prev_n * 100 if _prev_n else 0):.0f}%</div>')
+        col.markdown(
+            f'<div style="text-align:center;padding:10px 4px;background:var(--surface);'
+            f'border-radius:var(--r);border:1px solid var(--border);">'
+            f'<div style="font-size:var(--fs-xs);color:#6b7280;font-weight:600;">{label}</div>'
+            f'<div style="font-family:var(--font-m);font-size:var(--fs-xl);font-weight:800;'
+            f'color:var(--p);">{n}</div>{rate_html}</div>',
+            unsafe_allow_html=True,
+        )
+        _prev_n = n
 
     st.markdown("---")
 

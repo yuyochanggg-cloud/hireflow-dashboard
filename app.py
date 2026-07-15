@@ -833,6 +833,7 @@ def _upsert_rows(ws, new_rows, key_cols, protect_cols=None):
 # 定義已搬移至 hr_schema.py（單一來源），此處保留同名別名避免動到下游程式碼
 from hr_schema import S2_COLS as _S2_COLS, S3_COLS as _S3_COLS, S4_COLS as _S4_COLS
 from hr_schema import GRADE_META as _GRADE_META, GRADE_DEFAULT as _GRADE_DEFAULT
+from hr_schema import SHEET_HEADERS as _SHEET_HEADERS
 from sync_queue import load_pending as _load_pending_sync, add_pending as _add_pending_sync, remove_pending as _remove_pending_sync
 
 def _build_master_rows(jd_name, candidates):
@@ -950,6 +951,29 @@ def sync_library_to_gsheet(jd_name, spreadsheet_id):
     if errors:
         return False, "部分失敗：" + "；".join(errors)
     return True, f"✅ 已同步「{jd_name}」{len(candidates)} 筆 → 02/03/04 主檔"
+
+def append_screening_stat(spreadsheet_id, job_name, total_count, pass_count):
+    """每次批次初篩完成就append一列到「07_AI初篩統計」，記錄「這批篩了幾份、
+    幾份合格」。append-only，不是維護一個累計cell——重跑批次頂多多一列，
+    dashboard.py讀表加總即可算出「AI總共初篩了多少履歷」這個漏斗起點數字
+    （這個數字原本只存在app.py本機的resume_library檔案，Sheets讀不到）。
+    失敗不影響主流程（初篩結果已經存到本機了），只是記不到統計，靜默失敗即可。
+    """
+    if not _GSPREAD_AVAILABLE or not spreadsheet_id:
+        return
+    try:
+        sh = _get_gsheet_client(spreadsheet_id)
+        try:
+            ws = sh.worksheet("07_AI初篩統計")
+        except Exception:
+            ws = sh.add_worksheet("07_AI初篩統計", rows=1000, cols=10)
+            ws.append_row(_SHEET_HEADERS["07_AI初篩統計"], value_input_option="RAW")
+        ws.append_row(
+            [time.strftime("%Y-%m-%d"), job_name, job_name, total_count, pass_count],
+            value_input_option="RAW",
+        )
+    except Exception:
+        pass
 
 def update_application_status_gsheet(spreadsheet_id, job_name, candidate, new_status):
     """把單一候選人在 03_應徵主檔 的「流程狀態」更新為 new_status。
@@ -3144,6 +3168,13 @@ if start_btn or resume_btn or _auto_resume:
         1 for r in all_raw if str(r.get('綜合推薦度', '')).strip().upper().startswith('C')
     )
     save_session_log(st.session_state['pipeline_stats'])
+
+    # 漏斗數據的起點：這個數字只有這裡算得出來（本機批次結果），Sheets自己
+    # 沒有辦法回推「AI總共篩了多少履歷」，所以批次一完成就append一列存進去。
+    _stat_jd = resolve_jd_name()
+    _stat_sid = load_gsheet_id()
+    if _stat_jd and _stat_sid:
+        append_screening_stat(_stat_sid, _stat_jd, len(all_raw), len(final_results))
 
     # 篩選整批完成 → 自動同步全部候選人（含不合格）到 Sheets 02/03/04 主檔
     _sync_jd = resolve_jd_name()
