@@ -518,43 +518,53 @@ def fetch_all_jobs() -> list:
     return result
 
 def fetch_all_candidates() -> list:
+    """回傳「一筆應徵（application）= 一筆紀錄」的清單，操作單位是 application_id，
+    不是 candidate_id。
+
+    2026-07-15 修正一個真實bug：同一人（candidate_id相同）如果同時應徵/被篩選
+    了兩個不同職缺，03_應徵主檔會有兩筆列，application_id不同、流程狀態也各自
+    獨立。舊寫法用candidate_id去重（只留最新一筆），導致：(1) 同一人的其他職缺
+    應徵紀錄整個消失在候選人清單/看板裡；(2) update_stage/update_note用
+    candidate_id去找列時，遇到重複會抓到「表格裡第一個符合的」，可能改到錯的
+    職缺申請（實際案例：鄧旻翠同時應徵商品採購規劃專員與零件採購專員，在後者
+    按推進，改到的卻是前者）。
+    現在每一筆03_應徵主檔的列都各自成為一筆輸出紀錄，"id" 欄位是 application_id，
+    "candidate_id" 欄位保留人的識別碼供「06_員工主檔到職資料」這類本來就是
+    per-person（不是per-application）的查找使用。
+    """
     data = _load_all_sheets()
     apps  = data.get("03_應徵主檔", [])
     score = data.get("04_評分主檔", [])
     cands = data.get("02_候選人主檔", [])
 
-    app_map: dict = {}
-    for a in apps:
-        cid = a.get("candidate_id", "")
-        if not cid:
-            continue
-        # 同一候選人有多筆 application，保留流程狀態最後更新的那筆
-        existing = app_map.get(cid)
-        if not existing:
-            app_map[cid] = a
-        else:
-            # 以建立時間較新者為主（較新 = 更能代表目前進度）
-            if a.get("應徵批次日期", "") > existing.get("應徵批次日期", ""):
-                app_map[cid] = a
+    cand_map: dict = {c.get("candidate_id", ""): c for c in cands if c.get("candidate_id")}
 
-    score_map: dict = {}
+    score_by_app: dict = {}
+    score_by_cid: dict = {}
     for s in score:
+        aid = s.get("application_id", "")
         cid = s.get("candidate_id") or s.get("cand_id", "")
-        if cid and cid not in score_map:
-            score_map[cid] = s
+        if aid and aid not in score_by_app:
+            score_by_app[aid] = s
+        if cid and cid not in score_by_cid:
+            score_by_cid[cid] = s
 
     result = []
-    for c in cands:
-        cid = c.get("candidate_id", "")
-        if not cid:
+    seen_cids = set()
+    for a in apps:
+        app_id = a.get("application_id", "")
+        cid = a.get("candidate_id", "")
+        if not app_id or not cid:
             continue
-        a = app_map.get(cid, {})
-        s = score_map.get(cid, {})
+        seen_cids.add(cid)
+        c = cand_map.get(cid, {})
+        s = score_by_app.get(app_id) or score_by_cid.get(cid, {})
         grade_raw = (a.get("綜合推薦度") or s.get("綜合推薦度") or "").strip().upper()
         grade = grade_raw[0] if grade_raw and grade_raw[0] in ("A", "B", "C") else "C"
         stage = FLOW_TO_STAGE.get(a.get("流程狀態", ""), "screening")
         result.append({
-            "id":              cid,
+            "id":              app_id,
+            "candidate_id":    cid,
             "name":            c.get("真實姓名", ""),
             "code_104":        c.get("104代碼", ""),
             "email":           c.get("Email", ""),
@@ -570,6 +580,21 @@ def fetch_all_candidates() -> list:
             "screening_notes": a.get("初篩判定", s.get("初篩判定", "")),
             "note":            a.get("備註", ""),
             "stage_updated_at": a.get("人才狀態更新日", ""),
+        })
+
+    # 候選人主檔裡有、但03_應徵主檔完全沒有對應列的人（極少見的邊界情況），
+    # 仍然要讓他們出現在清單裡，用candidate_id當id（沒有application可用）。
+    for cid, c in cand_map.items():
+        if cid in seen_cids:
+            continue
+        result.append({
+            "id": cid, "candidate_id": cid,
+            "name": c.get("真實姓名", ""), "code_104": c.get("104代碼", ""),
+            "email": c.get("Email", ""), "source": c.get("來源", ""),
+            "job_opening_id": "", "grade": "C", "stage": "screening",
+            "created_at": c.get("初次進庫日期", ""), "stability": "", "commute": "",
+            "highlights": "", "gaps": "", "screening_notes": "", "note": "",
+            "stage_updated_at": "",
         })
     return result
 
@@ -640,12 +665,17 @@ def _candidates_with_join(rows: list, jobs: list) -> list:
             for c in rows]
 
 def _interviews_with_join(ivs: list, cands: list, jobs: list) -> list:
-    cand_map = {c["id"]: c for c in cands}
+    # cands 的 "id" 現在是 application_id；面試紀錄理想上也該用 application_id
+    # 對應到「哪一筆應徵」，只在舊面試紀錄沒有 application_id 時才退回用
+    # candidate_id 配對（配到同一人的哪個職缺不保證正確，但至少不會整個查無此人）。
+    cand_by_app = {c["id"]: c for c in cands}
+    cand_by_cid = {c["candidate_id"]: c for c in cands if c.get("candidate_id")}
     job_map  = {j["id"]: j["title"] for j in jobs}
     result = []
     for iv in ivs:
         iv2 = dict(iv)
-        c = cand_map.get(str(iv.get("candidate_id", "")), {})
+        c = cand_by_app.get(str(iv.get("application_id", ""))) \
+            or cand_by_cid.get(str(iv.get("candidate_id", "")), {})
         iv2["_cand_name"]  = c.get("name", "?")
         iv2["_cand_stage"] = c.get("stage", "")
         iv2["_job_title"]  = job_map.get(str(c.get("job_opening_id", "")), "")
@@ -692,7 +722,12 @@ def _upsert_row(ws, key_col: str, data: dict) -> bool:
     return True
 
 # ── Write Wrappers ────────────────────────────────────────────
-def update_stage(cid: str, new_stage: str) -> bool:
+def update_stage(app_id: str, new_stage: str) -> bool:
+    """app_id 是 application_id（一筆「人 × 職缺」的應徵紀錄），不是 candidate_id。
+    2026-07-15 修正：舊版用 candidate_id 找列，同一人若同時應徵兩個職缺會抓到
+    表格裡第一筆符合的列而改錯人（實際發生過：鄧旻翠同時應徵兩個職缺，在其中
+    一個按推進，另一個被誤改）。改用 application_id 精準對應到唯一一列。
+    """
     sh = _get_sheet()
     if not sh:
         return False
@@ -700,9 +735,9 @@ def update_stage(cid: str, new_stage: str) -> bool:
         flow = STAGE_TO_FLOW.get(new_stage, new_stage)
         # 用快取資料找列號，避免額外 API read（防止 429）
         cached_apps = _load_all_sheets().get("03_應徵主檔", [])
-        target = next((a for a in cached_apps if a.get("candidate_id") == cid), None)
+        target = next((a for a in cached_apps if a.get("application_id") == app_id), None)
         if not target or "_row" not in target:
-            st.error("找不到候選人資料，請重新整理後再試")
+            st.error("找不到應徵紀錄，請重新整理後再試")
             return False
         row_num = target["_row"]
         # dict keys 保留欄位順序（Python 3.7+），排除 _row 後即為原始 headers
@@ -712,6 +747,11 @@ def update_stage(cid: str, new_stage: str) -> bool:
             return False
         flow_col = headers.index("流程狀態") + 1  # gspread 1-indexed
         ws = sh.worksheet("03_應徵主檔")
+        # 結案時把「原本卡在哪個階段」記下來，流程狀態一旦變成「已結案」就再
+        # 也看不出來走到哪一步了——這欄供之後的漏斗轉換率計算用。
+        if new_stage == "rejected" and "結案前階段" in headers:
+            prestage_col = headers.index("結案前階段") + 1
+            ws.update_cell(row_num, prestage_col, target.get("流程狀態", ""))
         ws.update_cell(row_num, flow_col, flow)
         # 順便記錄「進入這個階段的日期」，供看板卡片顯示（例如「7/15 已傳邀約」）
         if "人才狀態更新日" in headers:
@@ -723,16 +763,17 @@ def update_stage(cid: str, new_stage: str) -> bool:
         st.error(f"更新失敗：{e}")
         return False
 
-def update_note(cid: str, note: str) -> bool:
+def update_note(app_id: str, note: str) -> bool:
+    """app_id 是 application_id，理由同 update_stage。"""
     sh = _get_sheet()
     if not sh:
         return False
     try:
         # 用快取資料找列號，避免額外 API read（防止 429）
         cached_apps = _load_all_sheets().get("03_應徵主檔", [])
-        target = next((a for a in cached_apps if a.get("candidate_id") == cid), None)
+        target = next((a for a in cached_apps if a.get("application_id") == app_id), None)
         if not target or "_row" not in target:
-            st.error("找不到候選人資料，請重新整理後再試")
+            st.error("找不到應徵紀錄，請重新整理後再試")
             return False
         row_num = target["_row"]
         headers = [k for k in target.keys() if k != "_row"]
@@ -904,7 +945,8 @@ def page_overview():
     all_hires = fetch_all_hires()
 
     ivs_joined = _interviews_with_join(all_ivs, all_cands, all_jobs)
-    cand_map   = {c["id"]: c for c in all_cands}
+    # 這裡要跟06_員工主檔（到職資料，本來就是per-person）對應，用candidate_id
+    cand_map   = {c["candidate_id"]: c for c in all_cands if c.get("candidate_id")}
 
     # ── 指標列 ────────────────────────────────────────────────
     active = sum(1 for c in all_cands if c.get("stage") not in ("hired", "rejected"))
@@ -1037,7 +1079,7 @@ def page_overview():
     ]
     for c in all_cands:
         if c.get("stage") == "hired":
-            h = hires_map.get(str(c.get("id", "")), {})
+            h = hires_map.get(str(c.get("candidate_id", "")), {})
             missing = [lbl for k, lbl in OB_CHECKLIST if not h.get(k)]
             if missing:
                 actions.append(f'✅ **{c.get("name","?")}** — 到職流程待完成：{" / ".join(missing)}')
@@ -1083,7 +1125,7 @@ def page_kanban():
     for c in all_cands:
         if c.get("stage") not in KANBAN_STAGES:
             continue
-        if c.get("stage") == "hired" and str(c.get("id")) in _reported_cids:
+        if c.get("stage") == "hired" and str(c.get("candidate_id")) in _reported_cids:
             continue
         jid = str(c.get("job_opening_id", "")).strip()
         if jid:
@@ -1317,7 +1359,8 @@ def page_candidates():
     st.caption("💡 初篩結果會在篩選完成後自動同步至 Google Sheets，無需手動匯入。")
 
 def _render_candidate_card(c: dict, all_jobs: list):
-    cid    = c["id"]
+    cid    = c["id"]              # application_id
+    pcid   = c["candidate_id"]    # candidate_id（面試紀錄的人員欄位要用這個）
     grade  = c.get("grade", "?")
     stage  = c.get("stage", "screening")
     name   = c.get("name", "?")
@@ -1381,7 +1424,8 @@ def _render_candidate_card(c: dict, all_jobs: list):
                 iv_loc  = st.text_input("地點", value="公司", key=f"ql_{cid}")
                 if st.button("確認安排", key=f"qsched_{cid}", type="primary"):
                     sdt = datetime.combine(iv_date, iv_time)
-                    if save_interview({"candidate_id": cid, "scheduled_at": sdt.isoformat(),
+                    if save_interview({"candidate_id": pcid, "application_id": cid,
+                                       "scheduled_at": sdt.isoformat(),
                                        "duration_minutes": 60, "interviewer": iv_itvr,
                                        "location": iv_loc, "result": "pending"}):
                         update_stage(cid, "interview_scheduled")
@@ -1602,7 +1646,8 @@ def page_interviews():
     all_jobs  = fetch_all_jobs()
     all_hires = fetch_all_hires()
     ivs       = _interviews_with_join(all_ivs, all_cands, all_jobs)
-    cand_map  = {c["id"]: c for c in all_cands}
+    # _build_cal_events 用candidate_id對06_員工主檔的報到日，這裡要用candidate_id當key
+    cand_map  = {c["candidate_id"]: c for c in all_cands if c.get("candidate_id")}
     job_map   = {j["id"]: j["title"] for j in all_jobs}
     cal_evs   = _build_cal_events(ivs, all_hires, cand_map)
 
@@ -1695,7 +1740,8 @@ def page_interviews():
                 if st.button("確認安排", type="primary", key="cal_sched"):
                     sdt = datetime.combine(iv_date, iv_time)
                     if save_interview({
-                        "candidate_id": sel_c["id"], "scheduled_at": sdt.isoformat(),
+                        "candidate_id": sel_c["candidate_id"], "application_id": sel_c["id"],
+                        "scheduled_at": sdt.isoformat(),
                         "duration_minutes": int(iv_dur), "interviewer": iv_itvr,
                         "location": iv_loc, "notes": iv_note, "result": "pending",
                     }):
@@ -1716,10 +1762,13 @@ def page_interviews():
         opts2 = {f"{c['name']} — {job_map.get(str(c.get('job_opening_id','')),'')}": c
                  for c in eligible2}
         sel_c2 = opts2[st.selectbox("選擇候選人", list(opts2.keys()), key="sc_cand")]
-        cid2   = sel_c2["id"]
+        cid2   = sel_c2["id"]              # application_id
+        pcid2  = sel_c2["candidate_id"]    # candidate_id（面試紀錄的人員欄位要用這個）
 
-        # 既有記錄
-        existing = [iv for iv in all_ivs if str(iv.get("candidate_id","")) == str(cid2)]
+        # 既有記錄：優先用application_id比對，舊面試紀錄沒有application_id時才退回candidate_id
+        existing = [iv for iv in all_ivs
+                    if str(iv.get("application_id","")) == str(cid2)
+                    or (not iv.get("application_id") and str(iv.get("candidate_id","")) == str(pcid2))]
         if existing:
             st.markdown("**已有記錄**")
             for iv in sorted(existing, key=lambda x: str(x.get("scheduled_at",""))):
@@ -1772,7 +1821,8 @@ def page_interviews():
             if existing:
                 payload["id"] = existing[-1]["id"]
             else:
-                payload["candidate_id"] = cid2
+                payload["candidate_id"] = pcid2
+                payload["application_id"] = cid2
                 payload["scheduled_at"] = datetime.now().isoformat()
             if save_interview(payload):
                 if sel_res == "pass":
@@ -1834,11 +1884,12 @@ def page_onboarding():
             )
 
     for c in target_cands:
-        cid     = c["id"]
+        cid     = c["id"]              # application_id：這筆「錄取這個職缺」的應徵紀錄
+        pcid    = c["candidate_id"]    # candidate_id：到職資料（06_員工主檔）是per-person，不是per-application
         name    = c.get("name", "?")
         stage   = c.get("stage", "")
         jtitle  = job_map.get(str(c.get("job_opening_id", "")), "")
-        h       = hires_map.get(str(cid), {})
+        h       = hires_map.get(str(pcid), {})
         done_n  = sum(1 for key, _ in CHECKLIST if h.get(key))
         total_n = len(CHECKLIST)
 
@@ -1873,7 +1924,7 @@ def page_onboarding():
                     changed = True
 
             if changed:
-                new_h["candidate_id"] = cid
+                new_h["candidate_id"] = pcid
                 if save_hire(new_h):
                     # 所有勾完 → 自動升為 hired
                     all_done = all(new_h.get(k) for k, _ in CHECKLIST)
@@ -1891,7 +1942,7 @@ def page_onboarding():
                 else:
                     if st.button("✅ 標記已報到（從招募看板移除）", key=f"ob_{cid}_actual_start"):
                         new_h2 = dict(h)
-                        new_h2["candidate_id"] = cid
+                        new_h2["candidate_id"] = pcid
                         new_h2["actual_start_date"] = date.today().isoformat()
                         if save_hire(new_h2):
                             st.toast(f"✅ {name} 已標記報到")
@@ -1918,7 +1969,7 @@ def page_onboarding():
                 if st.button("儲存 Offer 資訊", key=f"ob_save_{cid}", type="primary"):
                     new_h2 = dict(h)
                     new_h2.update({
-                        "candidate_id":    cid,
+                        "candidate_id":    pcid,
                         "employment_type": emp_type,
                         "proposed_salary": salary,
                         "start_date":      start_date.isoformat(),
@@ -1962,7 +2013,7 @@ def page_onboarding():
                 if st.button("儲存留任追蹤資訊", key=f"ob_retain_save_{cid}"):
                     new_h3 = dict(h)
                     new_h3.update({
-                        "candidate_id":   cid,
+                        "candidate_id":   pcid,
                         "三個月考核結果": eval_result,
                         "試用期通過":     probation,
                         "離職日":         leave_date.isoformat() if leave_date else "",
