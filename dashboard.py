@@ -165,8 +165,16 @@ h3 {
   color: var(--p) !important;
 }
 
-/* ── Cards / containers ───────────────────────────────── */
-[data-testid="stVerticalBlockBorderWrapper"] > div {
+/* ── Cards / containers ── Streamlit 1.57 拿掉了 stVerticalBlockBorderWrapper，
+   border=True 的 container 不再有專屬 testid，只能靠 key= 產生的
+   class="st-key-<key>" 鎖定；下面列出本檔所有 bordered card 的 key 前綴
+   （kb_card / kb_job 是招募看板既有的 key，跟下面 page_kanban() 裡的
+   專屬覆寫規則並存——那邊的規則在原始碼順序上更後面，specificity 相同時
+   會蓋掉這裡的 padding/border-radius，是刻意的疊加，不是衝突）──────── */
+[class*="st-key-kb_card"],
+[class*="st-key-kb_job"],
+[class*="st-key-card_stage_"],
+[class*="st-key-card_hire_"] {
   border: 1px solid var(--border) !important;
   border-radius: var(--r) !important;
   box-shadow: var(--sh-xs) !important;
@@ -174,7 +182,10 @@ h3 {
   background: var(--white) !important;
   transition: box-shadow .18s, transform .15s !important;
 }
-[data-testid="stVerticalBlockBorderWrapper"] > div:hover {
+[class*="st-key-kb_card"]:hover,
+[class*="st-key-kb_job"]:hover,
+[class*="st-key-card_stage_"]:hover,
+[class*="st-key-card_hire_"]:hover {
   box-shadow: var(--sh-md) !important;
 }
 
@@ -558,6 +569,7 @@ def fetch_all_candidates() -> list:
             "gaps":            s.get("缺口與潛在地雷", ""),
             "screening_notes": a.get("初篩判定", s.get("初篩判定", "")),
             "note":            a.get("備註", ""),
+            "stage_updated_at": a.get("人才狀態更新日", ""),
         })
     return result
 
@@ -701,6 +713,10 @@ def update_stage(cid: str, new_stage: str) -> bool:
         flow_col = headers.index("流程狀態") + 1  # gspread 1-indexed
         ws = sh.worksheet("03_應徵主檔")
         ws.update_cell(row_num, flow_col, flow)
+        # 順便記錄「進入這個階段的日期」，供看板卡片顯示（例如「7/15 已傳邀約」）
+        if "人才狀態更新日" in headers:
+            updated_col = headers.index("人才狀態更新日") + 1
+            ws.update_cell(row_num, updated_col, date.today().isoformat())
         _invalidate()
         return True
     except Exception as e:
@@ -1146,6 +1162,9 @@ def page_kanban():
         bpfx   = f"kb_{jid}_{sk}_{cid}"
 
         meta = f"{days}天 · {_html.escape(source)}" if source else f"{days}天"
+        # 進入目前階段的日期（M/D），跟在等第徽章旁邊，一眼看出「卡多久了」
+        stage_dt = parse_dt(c.get("stage_updated_at"))
+        stage_date_txt = f"{stage_dt.month}/{stage_dt.day}" if stage_dt else ""
         with st.container(border=True, key=f"kb_card_{bpfx}"):
             # 姓名+等第：字級拉到 --fs-sm（可讀），允許換行，不再用ellipsis
             # 硬裁字——裁字才是使用者真正在意的「看不到人在哪」的根源。
@@ -1158,7 +1177,11 @@ def page_kanban():
                 f'background:{gm[0]};color:{gm[1]};border:1px solid {gm[2]};'
                 f'border-radius:4px;font-size:var(--fs-sm);line-height:1.6;'
                 f'padding:1px 6px;flex-shrink:0;">'
-                f'<span>{gm[3]}</span><span>{grade}</span></span></div>',
+                f'<span>{gm[3]}</span><span>{grade}</span></span>'
+                + (f'<span style="font-size:var(--fs-xs);color:#94a3b8;flex-shrink:0;" '
+                   f'title="{STAGE_LABEL.get(sk, "")}進度更新於{stage_date_txt}">{stage_date_txt}</span>'
+                   if stage_date_txt else '')
+                + '</div>',
                 unsafe_allow_html=True,
             )
 
@@ -1304,7 +1327,7 @@ def _render_candidate_card(c: dict, all_jobs: list):
     stab_color = {"高": "#15803d", "中": "#92400e", "低": "#b91c1c"}.get(stab, "#64748b")
     cur_idx = STAGE_KEYS.index(stage) if stage in STAGE_KEYS else 0
 
-    with st.container(border=True):
+    with st.container(border=True, key=f"card_stage_{cid}"):
         cg, ci, cs, ca = st.columns([0.6, 3.5, 1.5, 2])
         cg.markdown(grade_badge(grade), unsafe_allow_html=True)
         ci.markdown(
@@ -1819,7 +1842,7 @@ def page_onboarding():
         done_n  = sum(1 for key, _ in CHECKLIST if h.get(key))
         total_n = len(CHECKLIST)
 
-        with st.container(border=True):
+        with st.container(border=True, key=f"card_hire_{cid}"):
             hc1, hc2 = st.columns([4, 2])
             hc1.markdown(
                 f'<div style="font-weight:700;font-size:var(--fs-base);">{_html.escape(name)}'
