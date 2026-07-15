@@ -323,7 +323,7 @@ CONFIG_FILE       = "gsheet_config.json"   # shared with sync_to_gsheet.py
 # STAGES / STAGE_KEYS / STAGE_LABEL / STAGE_ICON / STAGE_BG / STAGE_FG
 # 定義已搬移至 hr_schema.py（單一來源）
 from hr_schema import STAGES, STAGE_KEYS, STAGE_LABEL, STAGE_ICON, STAGE_BG, STAGE_FG
-from sync_queue import load_pending as _load_pending_sync
+from sync_queue import load_pending as _load_pending_sync, remove_pending as _remove_pending_sync
 
 # Grade 顏色權威來源在 hr_schema.py（GRADE_META），這裡轉成既有程式碼慣用的
 # (bg, text, border, icon) tuple 形狀，呼叫端不用改。
@@ -776,6 +776,25 @@ def update_stage(app_id: str, new_stage: str) -> bool:
     except Exception as e:
         st.error(f"更新失敗：{e}")
         return False
+
+def retry_pending_syncs() -> tuple[int, int]:
+    """重試 app.py 端寫入失敗、暫存在 pending_status_sync.json 的流程狀態更新。
+    application_id 用跟 app.py（update_application_status_gsheet）相同的規則現場組回
+    來（佇列裡只存104代碼/職缺名稱，沒存application_id），組好後直接呼叫既有的
+    update_stage，不重寫一份寫入邏輯。回傳 (成功數, 失敗數)。
+    """
+    import re as _re
+    ok = fail = 0
+    for p in _load_pending_sync():
+        job_safe = _re.sub(r'[^\w\-]', '_', p.get("job_name", ""))[:20]
+        app_id = f"APP-{p.get('code', '')}-{job_safe}"
+        stage = FLOW_TO_STAGE.get(p.get("new_status", ""), "")
+        if stage and update_stage(app_id, stage):
+            _remove_pending_sync(p["key"])
+            ok += 1
+        else:
+            fail += 1
+    return ok, fail
 
 def update_note(app_id: str, note: str) -> bool:
     """app_id 是 application_id，理由同 update_stage。"""
@@ -1982,16 +2001,19 @@ def page_onboarding():
                 unsafe_allow_html=True,
             )
 
-            # Checklist items
-            check_cols = st.columns(total_n)
+            # Checklist items（P1：9個等寬欄位在標準螢幕寬度下會換行擠壓，
+            # 改成每列3欄的3x3網格，checkbox跟文字不再擠在一起）
             changed = False
             new_h = dict(h)
-            for col, (key, label) in zip(check_cols, CHECKLIST):
-                current = bool(h.get(key))
-                checked = col.checkbox(label, value=current, key=f"ob_{cid}_{key}")
-                if checked != current:
-                    new_h[key] = checked
-                    changed = True
+            for row_start in range(0, total_n, 3):
+                row_items = CHECKLIST[row_start:row_start + 3]
+                check_cols = st.columns(3)
+                for col, (key, label) in zip(check_cols, row_items):
+                    current = bool(h.get(key))
+                    checked = col.checkbox(label, value=current, key=f"ob_{cid}_{key}")
+                    if checked != current:
+                        new_h[key] = checked
+                        changed = True
 
             if changed:
                 new_h["candidate_id"] = pcid
@@ -2467,7 +2489,14 @@ with st.sidebar:
         st.error(f"⚠️ 初篩端有 {len(_pending_syncs)} 筆流程狀態同步失敗")
         for _p in _pending_syncs:
             st.caption(f"{_p['name']}（{_p['job_name']} → {_p['new_status']}）")
-        st.caption("請開啟 app.py 側欄重試同步")
+        if st.button("🔁 重試同步", key="dash_retry_pending_sync", use_container_width=True):
+            _ok, _fail = retry_pending_syncs()
+            if _ok:
+                st.toast(f"✅ 已補同步 {_ok} 筆")
+            if _fail:
+                st.warning(f"仍有 {_fail} 筆失敗，請確認Sheets連線或改到app.py重試")
+            _invalidate()
+            st.rerun()
 
 _PAGE_META = {
     "🏠 本週 + 下週總覽": ("🏠 本週 + 下週總覽", "面試行程 · 報到事件 · 待辦事項一覽"),

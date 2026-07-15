@@ -2200,7 +2200,10 @@ def render_home_page():
                     st.rerun()
                 continue
 
-            _r1, _r2, _r3, _r4, _r5, _r6, _r7 = st.columns([3.2, 0.9, 1, 1, 1.3, 1.1, 0.6])
+            # P2（Fable架構審查）：欄寬比例常數化，避免下次改這張表時對不齊視覺節奏
+            # 卻找不到原本的比例是怎麼來的。純搬移，不改變任何渲染結果。
+            _JOB_ROW_COLS = [3.2, 0.9, 1, 1, 1.3, 1.1, 0.6]  # 職缺名稱/人數/合格率/待處理/更新日期/進入按鈕/選單
+            _r1, _r2, _r3, _r4, _r5, _r6, _r7 = st.columns(_JOB_ROW_COLS)
             _r1.markdown(
                 f'<div style="font-weight:800;font-size:var(--fs-xl);color:#0f172a;line-height:1.3;">'
                 f'{_html_module.escape(lib["jd_name"])}</div>',
@@ -2352,7 +2355,18 @@ with st.sidebar:
 
     options = list(jd_profiles.keys()) + ["➕ 新增自訂職缺"]
 
+    # P0（Fable架構審查）：換職缺沒有防護，切換下拉選單前對正在編輯、還沒按
+    # 「儲存職缺模型」的JD內容沒有任何保留，點錯選項就無聲蓋掉。這裡在切換前
+    # 把當下欄位內容快照起來，切換後選單旁提供一顆還原按鈕（只保留一層）。
+    JD_STATE_KEYS = ['loc_input', 'must_input', 'nice_input', 'current_dimensions',
+                     'ai_keywords_104', 'raw_jd_text_saved']
+    _prev_jd_selector = st.session_state.get('jd_selector')
+
     def on_jd_change():
+        st.session_state['_last_job_snapshot'] = {
+            'job': _prev_jd_selector,
+            **{k: st.session_state.get(k) for k in JD_STATE_KEYS},
+        }
         selected = st.session_state.jd_selector
         jd_db = load_jd_profiles()
         if selected in jd_db:
@@ -2371,6 +2385,17 @@ with st.sidebar:
             st.session_state['raw_jd_text_saved'] = ""
 
     selected_jd = st.selectbox("選擇招募專案", options, key="jd_selector", on_change=on_jd_change)
+
+    _snap = st.session_state.get('_last_job_snapshot')
+    if _snap and _snap.get('job') and _snap['job'] != st.session_state.get('jd_selector'):
+        if st.button(f"↩ 還原「{_snap['job']}」剛才的編輯內容", key="undo_job_switch",
+                     use_container_width=True,
+                     help="切換職缺前，這個職缺欄位裡的內容還原回來（僅限上一步）"):
+            for _k in JD_STATE_KEYS:
+                st.session_state[_k] = _snap.get(_k)
+            st.session_state['jd_selector'] = _snap['job']
+            st.session_state.pop('_last_job_snapshot', None)
+            st.rerun()
 
     if selected_jd == "➕ 新增自訂職缺":
         target_jd_name = st.text_input("📝 請輸入新職缺名稱")
@@ -3527,6 +3552,31 @@ def _render_results():
 </div>
 ''', unsafe_allow_html=True)
 
+                # P1（Fable架構審查）：核對/修正AI解析姓名原本要展開整個PDF區塊才看得到，
+                # 初篩一批20份履歷就是20次多餘點擊。姓名旁加一顆輕量popover快速修正，
+                # 下面「🔍 查看PDF原稿」的完整功能保留不動（要核對PDF原文才需要展開）。
+                def _apply_name_fix(fixed_name):
+                    for r in st.session_state['raw_final_results']:
+                        if str(r.get('104代碼')) == str(row.get('104代碼')):
+                            r['真實姓名'] = fixed_name
+                    st.session_state['final_report_df'] = format_df_for_display(
+                        [r for r in st.session_state['raw_final_results'] if r.get('初篩判定') == '合格']
+                    )
+                    _name_fix_jd = resolve_jd_name()
+                    if _name_fix_jd:
+                        update_candidate_field(_name_fix_jd, str(row.get('104代碼', '')), '真實姓名', fixed_name)
+                    st.rerun()
+
+                with st.popover("✎", help="快速校正AI解析的姓名"):
+                    _pop_new_name = st.text_input(
+                        "姓名", value=str(row.get('真實姓名', '')),
+                        key=f"name_edit_popover_{code}_{idx}", label_visibility="collapsed",
+                    )
+                    if _pop_new_name.strip() and _pop_new_name.strip() != str(row.get('真實姓名', '')):
+                        if st.button("✅ 套用", key=f"apply_name_popover_{code}_{idx}"):
+                            _apply_name_fix(_pop_new_name.strip())
+                    st.caption("要核對PDF原文請展開下方「🔍 查看PDF原稿」")
+
                 # ── PDF 截圖 + 名字修正欄 ────────────────────────────
                 edit_key = f"name_edit_{code}_{idx}"
                 src_file  = str(cand_data.get('來源檔案', row.get('來源檔案', '')))
@@ -3590,17 +3640,7 @@ def _render_results():
 
                     if new_name.strip() and new_name.strip() != str(row.get('真實姓名', '')):
                         if st.button("✅ 套用修正", key=f"apply_name_{code}_{idx}"):
-                            for r in st.session_state['raw_final_results']:
-                                if str(r.get('104代碼')) == str(row.get('104代碼')):
-                                    r['真實姓名'] = new_name.strip()
-                            st.session_state['final_report_df'] = format_df_for_display(
-                                [r for r in st.session_state['raw_final_results'] if r.get('初篩判定') == '合格']
-                            )
-                            # 持久化姓名修正到履歷庫
-                            _name_fix_jd = resolve_jd_name()
-                            if _name_fix_jd:
-                                update_candidate_field(_name_fix_jd, str(row.get('104代碼', '')), '真實姓名', new_name.strip())
-                            st.rerun()
+                            _apply_name_fix(new_name.strip())
 
                     # ── PDF 渲染（展開後才執行，避免頁面大量 base64 拖垮效能）──
                     if _is_expanded:
