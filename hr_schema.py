@@ -78,7 +78,10 @@ SHEET_HEADERS = {
 STAGES = [
     ("screening",           "初篩中",      "🔍", "#ede9fe", "#5b21b6"),  # violet
     ("recommended",         "已推薦主管",  "👔", "#fef9c3", "#713f12"),  # yellow
-    ("interview_scheduled", "已約面試",    "📅", "#fef3c7", "#92400e"),  # amber
+    # 2026-07-15 新增：已推薦主管→約定面試之間補一個「已傳邀約」，代表
+    # HR已發面試邀請信件/電話給候選人、還在等對方回覆時間。
+    ("invited",             "已傳邀約",    "📨", "#ffedd5", "#9a3412"),  # orange
+    ("interview_scheduled", "約定面試",    "📅", "#fef3c7", "#92400e"),  # amber
     ("interviewed",         "已面試",      "✅", "#d1fae5", "#065f46"),  # emerald
     ("offer_pending",       "錄取審核",    "📋", "#fce7f3", "#9d174d"),  # rose
     ("hired",               "已通知",      "🎉", "#dcfce7", "#14532d"),  # green
@@ -111,10 +114,15 @@ def grade_badge_html(grade: str) -> str:
             f'{m["icon"]}{grade}</span>')
 
 # ── 「流程狀態」中文文字 ↔ UI stage key 映射（來源：dashboard.py）──────────
+# 2026-07-15：新增「已傳邀約」階段，並把 interview_scheduled 的顯示文字從
+# 「已約面試」改成「約定面試」。FLOW_TO_STAGE 同時保留舊文字「已約面試」
+# 做向下相容——Google Sheets裡舊資料寫的是這個字，不會因為改名就讀不到。
 FLOW_TO_STAGE = {
     "初篩完成":   "screening",
     "已推薦主管": "recommended",
-    "已約面試":   "interview_scheduled",
+    "已傳邀約":   "invited",
+    "已約面試":   "interview_scheduled",  # 舊資料相容（改名前寫入的文字）
+    "約定面試":   "interview_scheduled",
     "已面試":     "interviewed",
     "面試完成":   "interviewed",
     "錄取審核":   "offer_pending",
@@ -126,7 +134,8 @@ FLOW_TO_STAGE = {
 STAGE_TO_FLOW = {
     "screening":           "初篩完成",
     "recommended":         "已推薦主管",
-    "interview_scheduled": "已約面試",
+    "invited":             "已傳邀約",
+    "interview_scheduled": "約定面試",
     "interviewed":         "已面試",
     "offer_pending":       "錄取審核",
     "hired":               "已通知",

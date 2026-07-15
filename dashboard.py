@@ -1058,7 +1058,7 @@ def page_kanban():
 
     # 並排欄位（104式視覺化，非真拖曳）：每個職缺一個區塊，區塊內每個階段一欄
     BOARD_STAGES = [s for s in STAGES if s[0] in
-                    ("recommended", "interview_scheduled", "interviewed", "offer_pending", "hired")]
+                    ("recommended", "invited", "interview_scheduled", "interviewed", "offer_pending", "hired")]
     BOARD_KEYS = {s[0] for s in BOARD_STAGES}
     KANBAN_STAGES = BOARD_KEYS | ({"rejected"} if show_rejected else set())
 
@@ -1349,7 +1349,7 @@ def _render_candidate_card(c: dict, all_jobs: list):
             if c.get("screening_notes"):
                 st.caption(f"初篩備注：{c['screening_notes']}")
 
-            if stage in ("screening", "interview_scheduled"):
+            if stage in ("screening", "invited", "interview_scheduled"):
                 st.markdown("**快速安排面試**")
                 qs1, qs2, qs3 = st.columns(3)
                 iv_date = qs1.date_input("日期", value=date.today() + timedelta(days=3), key=f"qd_{cid}")
@@ -1654,7 +1654,7 @@ def page_interviews():
         st.divider()
         with st.expander("➕ 安排新面試", expanded=False):
             eligible = [c for c in all_cands
-                        if c.get("stage") in ("screening", "interview_scheduled")]
+                        if c.get("stage") in ("screening", "invited", "interview_scheduled")]
             if not eligible:
                 st.info("目前無可安排面試的候選人。")
             else:
