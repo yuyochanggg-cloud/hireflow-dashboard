@@ -591,9 +591,42 @@ def save_resume_library(jd_name, candidates):
             'candidates':   candidates,
         }, f, ensure_ascii=False, indent=2)
 
+_JOB_STATUS_TO_FLOW = {'active': '招募中', 'closed': '已結束'}
+
+def sync_job_status_to_gsheet(spreadsheet_id, job_name, status):
+    """把本機的job_status(active/closed)同步到01_職缺主檔的「狀態」欄。
+    使用者實際回報過的落差：這裡按「結案」只改本機履歷庫的旗標，dashboard.py
+    的看板/職缺管理讀的是Sheets另一個獨立的「狀態」欄，兩邊互不相通，導致
+    在這裡結案的職缺在dashboard那邊還是顯示「招募中」。回傳(成功, 訊息)。
+    """
+    if not _GSPREAD_AVAILABLE or not spreadsheet_id:
+        return False, "尚未設定試算表ID"
+    try:
+        sh = _get_gsheet_client(spreadsheet_id)
+        ws = sh.worksheet("01_職缺主檔")
+    except Exception as e:
+        return False, f"連線失敗：[{type(e).__name__}] {e}"
+    try:
+        rows = ws.get_all_values()
+        if not rows:
+            return False, "01_職缺主檔為空"
+        header = rows[0]
+        if "job_id" not in header or "狀態" not in header:
+            return False, "01_職缺主檔缺少job_id或狀態欄位"
+        jid_col = header.index("job_id")
+        status_col = header.index("狀態") + 1
+        for i, row in enumerate(rows[1:], start=2):
+            if row and row[jid_col] == job_name:
+                ws.update_cell(i, status_col, _JOB_STATUS_TO_FLOW.get(status, status))
+                return True, "已同步"
+        return False, f"01_職缺主檔找不到「{job_name}」，可能還沒同步過職缺資料"
+    except Exception as e:
+        return False, f"更新失敗：{e}"
+
 def set_job_status(jd_name, status):
     """設定職缺開啟(active)/結案(closed)狀態，不動候選人資料本身，
-    純粹讓首頁卡片牆知道要不要顯示在主要區塊。"""
+    純粹讓首頁卡片牆知道要不要顯示在主要區塊。同時同步到Google Sheets，
+    讓dashboard.py的看板/職缺管理跟這裡的結案狀態一致。"""
     _safe = re.sub(r'[\\/:*?"<>|]', '_', str(jd_name))
     fpath = os.path.join(LIBRARY_DIR, f"{_safe}.json")
     if not os.path.exists(fpath):
@@ -603,6 +636,11 @@ def set_job_status(jd_name, status):
     payload['job_status'] = status
     with open(fpath, 'w', encoding='utf-8') as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
+    _sid = load_gsheet_id()
+    if _sid:
+        _ok, _msg = sync_job_status_to_gsheet(_sid, jd_name, status)
+        if not _ok:
+            st.warning(f"⚠️ 本機已{'結案' if status=='closed' else '重新開啟'}，但Sheets同步失敗：{_msg}")
 
 def rename_resume_library(old_name, new_name):
     """幫職缺改名：搬動履歷庫檔案、更新檔內 jd_name，並同步改對應的職缺模型名稱（若有）。
