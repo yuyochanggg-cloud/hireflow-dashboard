@@ -1446,18 +1446,25 @@ def page_candidates():
                                placeholder="搜尋姓名 / 104代碼")
 
     # 定位宣言（Fable架構審查）：資料全留（人才庫，一筆都不刪），但畫面預設
-    # 只給合格/進行中的人看——不合格/已結案的人要「主動打開」才看得到，
-    # 不是預設就把804筆全部倒出來。這兩個checkbox預設關閉。
-    f5, f6, _f_spacer = st.columns([2, 2, 3])
-    show_ai_reject = f5.checkbox("包含AI不合格（淘汰名單）", value=False, key="c_show_reject")
-    show_closed    = f6.checkbox("包含已結案候選人", value=False, key="c_show_closed")
+    # 只給合格/進行中的人看——不合格/已結案/職缺已關閉的人要「主動打開」
+    # 才看得到，不是預設就把804筆全部倒出來。這三個checkbox預設關閉。
+    f5, f6, f7 = st.columns(3)
+    show_ai_reject   = f5.checkbox("包含AI不合格（淘汰名單）", value=False, key="c_show_reject")
+    show_closed      = f6.checkbox("包含已結案候選人", value=False, key="c_show_closed")
+    show_closed_jobs = f7.checkbox("包含已關閉職缺的候選人", value=False, key="c_show_closed_jobs")
 
     # Apply filters
+    job_status_map = {j["id"]: j.get("status") for j in all_jobs}
     rows = all_cands
     if not show_ai_reject:
         rows = [c for c in rows if c.get("screening_result") != "不合格"]
     if not show_closed:
         rows = [c for c in rows if c.get("stage") != "rejected"]
+    # 選了特定職缺時尊重使用者的明確選擇，不套用「排除已關閉職缺」——
+    # 那是「全部職缺」情境下避免捲一堆已經沒人要處理的候選人才需要的預設值。
+    if not show_closed_jobs and not sel_jid:
+        rows = [c for c in rows
+                if job_status_map.get(str(c.get("job_opening_id", "")), "open") != "closed"]
     if sel_jid:
         rows = [c for c in rows if str(c.get("job_opening_id", "")) == str(sel_jid)]
     if sel_stage:
