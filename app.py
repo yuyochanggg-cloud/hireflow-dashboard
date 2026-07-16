@@ -3357,600 +3357,606 @@ def _render_results():
         rej_raw = rej_raw.astype(str).replace('nan', '')
         st.session_state['rejected_df'] = rej_raw
 
-    if final_raw is not None and not final_raw.empty:
-        st.subheader("🎯 候選人戰略總表")
+    if (final_raw is not None and not final_raw.empty) or (rej_raw is not None and not rej_raw.empty):
+        if final_raw is not None and not final_raw.empty:
+            st.subheader("🎯 候選人戰略總表")
 
-        with st.expander("🔍 開啟進階篩選器", expanded=True):
-            col_f1, col_f2, col_f3 = st.columns([2, 2, 1])
-            with col_f1:
-                search_kw = st.text_input("🔑 關鍵字搜尋", "", placeholder="輸入關鍵字後按 Enter",
-                                          key="filter_search_kw")
-            with col_f2:
-                min_score_filter = st.selectbox("⭐ 最低綜合推薦度過濾",
-                                                ["不限", "A (優先面試)", "B (符合標準以上)"],
-                                                key="filter_min_score")
-            with col_f3:
-                commute_filter = st.checkbox("🚇 通勤合理", value=True, help="隱藏 AI 判定通勤不合理的候選人",
-                                             key="filter_commute")
+            with st.expander("🔍 開啟進階篩選器", expanded=True):
+                col_f1, col_f2, col_f3 = st.columns([2, 2, 1])
+                with col_f1:
+                    search_kw = st.text_input("🔑 關鍵字搜尋", "", placeholder="輸入關鍵字後按 Enter",
+                                              key="filter_search_kw")
+                with col_f2:
+                    min_score_filter = st.selectbox("⭐ 最低綜合推薦度過濾",
+                                                    ["不限", "A (優先面試)", "B (符合標準以上)"],
+                                                    key="filter_min_score")
+                with col_f3:
+                    commute_filter = st.checkbox("🚇 通勤合理", value=True, help="隱藏 AI 判定通勤不合理的候選人",
+                                                 key="filter_commute")
 
-        filtered_df = final_raw.copy()
-        if search_kw.strip():
-            mask = filtered_df.apply(
-                lambda row: row.astype(str).str.contains(search_kw.strip(), case=False, regex=False).any(), axis=1
-            )
-            filtered_df = filtered_df[mask]
+            filtered_df = final_raw.copy()
+            if search_kw.strip():
+                mask = filtered_df.apply(
+                    lambda row: row.astype(str).str.contains(search_kw.strip(), case=False, regex=False).any(), axis=1
+                )
+                filtered_df = filtered_df[mask]
 
-        if min_score_filter != "不限":
-            if "A" in min_score_filter:
-                filtered_df = filtered_df[filtered_df['綜合推薦度'].astype(str).str.contains('A', na=False, case=False)]
-            elif "B" in min_score_filter:
-                filtered_df = filtered_df[filtered_df['綜合推薦度'].astype(str).str.contains('A|B', na=False, case=False, regex=True)]
+            if min_score_filter != "不限":
+                if "A" in min_score_filter:
+                    filtered_df = filtered_df[filtered_df['綜合推薦度'].astype(str).str.contains('A', na=False, case=False)]
+                elif "B" in min_score_filter:
+                    filtered_df = filtered_df[filtered_df['綜合推薦度'].astype(str).str.contains('A|B', na=False, case=False, regex=True)]
 
-        if commute_filter and '通勤評估' in filtered_df.columns:
-            # 只信任 AI 的明確結論：有「不合理」才過濾，其餘一律保留
-            # 舊版的數值邏輯（1小時 >= 1 判斷為 bad）會推翻 AI「合理」的結論，已移除
-            def _is_bad_commute(text):
-                t = str(text)
-                return bool(re.search(r'不合理', t))
+            if commute_filter and '通勤評估' in filtered_df.columns:
+                # 只信任 AI 的明確結論：有「不合理」才過濾，其餘一律保留
+                # 舊版的數值邏輯（1小時 >= 1 判斷為 bad）會推翻 AI「合理」的結論，已移除
+                def _is_bad_commute(text):
+                    t = str(text)
+                    return bool(re.search(r'不合理', t))
 
-            filtered_df = filtered_df[
-                ~filtered_df['通勤評估'].apply(_is_bad_commute)
-            ]
+                filtered_df = filtered_df[
+                    ~filtered_df['通勤評估'].apply(_is_bad_commute)
+                ]
 
-        total_filtered = len(filtered_df)
-        # 通勤過濾移除了幾位——顯示提示讓使用者知道
-        if commute_filter and '通勤評估' in final_raw.columns:
-            _commute_hidden = int(final_raw['通勤評估'].apply(
-                lambda t: bool(re.search(r'不合理', str(t)))
-            ).sum())
-        else:
-            _commute_hidden = 0
-        if commute_filter and _commute_hidden > 0 and total_filtered == 0:
-            st.warning(f"⚠️ **所有候選人均被通勤過濾器隱藏（共 {_commute_hidden} 位）**｜取消勾選「🚇 通勤合理」即可顯示", icon=None)
-        elif commute_filter and _commute_hidden > 0:
-            st.caption(f"🚇 通勤過濾已隱藏 {_commute_hidden} 位候選人")
-        PAGE_SIZE = 10
-        if 'card_page' not in st.session_state:
-            st.session_state['card_page'] = 0
-        # 個別「📧 推薦給主管」勾選的真正持久儲存區。
-        # 注意：不可只靠 st.checkbox(key=f"email_sel_{code}") 本身的 widget state 來跨頁保存——
-        # 這個區塊被包在 @st.fragment（_render_results）裡，Streamlit 對 fragment 的
-        # widget state 有「本次 fragment 執行沒有重新渲染到的 widget，其 state 會被清除」的機制
-        # （見 streamlit/runtime/state/session_state.py 的 _remove_stale_widgets /
-        # _is_stale_widget：widget 屬於本次有跑的 fragment、但這次沒被渲染到，就視為 stale 被砍）。
-        # 換頁只渲染當頁 10 張卡片，換頁本身又是同一個 fragment 內的重跑，
-        # 於是「上一頁」的 email_sel_ 系列 key 會在切到下一頁的當下被整批砍掉——
-        # 這正是使用者回報「翻頁後之前勾選的人不見了」的根因。
-        # 解法：另外用一個「非 widget」的 plain dict 存實際勾選狀態，
-        # 它不是 element/widget id，不會被 fragment 的 stale-widget 清除機制動到。
-        _persist = st.session_state.setdefault('_email_sel_store', {})
+            total_filtered = len(filtered_df)
+            # 通勤過濾移除了幾位——顯示提示讓使用者知道
+            if commute_filter and '通勤評估' in final_raw.columns:
+                _commute_hidden = int(final_raw['通勤評估'].apply(
+                    lambda t: bool(re.search(r'不合理', str(t)))
+                ).sum())
+            else:
+                _commute_hidden = 0
+            if commute_filter and _commute_hidden > 0 and total_filtered == 0:
+                st.warning(f"⚠️ **所有候選人均被通勤過濾器隱藏（共 {_commute_hidden} 位）**｜取消勾選「🚇 通勤合理」即可顯示", icon=None)
+            elif commute_filter and _commute_hidden > 0:
+                st.caption(f"🚇 通勤過濾已隱藏 {_commute_hidden} 位候選人")
+            PAGE_SIZE = 10
+            if 'card_page' not in st.session_state:
+                st.session_state['card_page'] = 0
+            # 個別「📧 推薦給主管」勾選的真正持久儲存區。
+            # 注意：不可只靠 st.checkbox(key=f"email_sel_{code}") 本身的 widget state 來跨頁保存——
+            # 這個區塊被包在 @st.fragment（_render_results）裡，Streamlit 對 fragment 的
+            # widget state 有「本次 fragment 執行沒有重新渲染到的 widget，其 state 會被清除」的機制
+            # （見 streamlit/runtime/state/session_state.py 的 _remove_stale_widgets /
+            # _is_stale_widget：widget 屬於本次有跑的 fragment、但這次沒被渲染到，就視為 stale 被砍）。
+            # 換頁只渲染當頁 10 張卡片，換頁本身又是同一個 fragment 內的重跑，
+            # 於是「上一頁」的 email_sel_ 系列 key 會在切到下一頁的當下被整批砍掉——
+            # 這正是使用者回報「翻頁後之前勾選的人不見了」的根因。
+            # 解法：另外用一個「非 widget」的 plain dict 存實際勾選狀態，
+            # 它不是 element/widget id，不會被 fragment 的 stale-widget 清除機制動到。
+            _persist = st.session_state.setdefault('_email_sel_store', {})
 
-        # 篩選條件改變時重置分頁
-        _filter_key = f"{search_kw}|{min_score_filter}|{commute_filter}"
-        if st.session_state.get('_last_filter_key') != _filter_key:
-            st.session_state['card_page'] = 0
-            st.session_state['_last_filter_key'] = _filter_key
-            # 篩選條件變了，同一個 card_page 數字可能對應到完全不同的一批候選人，
-            # 殘留的「全選本頁」勾選狀態（含其 shadow 記錄）套用到新的一批人身上會誤判，
-            # 因此一併清掉，比照上面「篩選條件改變時重置分頁」的做法。
-            # 個別候選人的實際勾選（_persist）刻意「不」清除：
-            # 使用者常見流程是先用某關鍵字挑幾位、再放寬/更換條件挑其他人，
-            # 最後統一送出推薦信；若換條件就清空已選名單，反而會弄丟先前的選擇。
-            for _k in list(st.session_state.keys()):
-                if _k.startswith('select_all_page_') or _k.startswith('_select_all_shadow_'):
-                    del st.session_state[_k]
+            # 篩選條件改變時重置分頁
+            _filter_key = f"{search_kw}|{min_score_filter}|{commute_filter}"
+            if st.session_state.get('_last_filter_key') != _filter_key:
+                st.session_state['card_page'] = 0
+                st.session_state['_last_filter_key'] = _filter_key
+                # 篩選條件變了，同一個 card_page 數字可能對應到完全不同的一批候選人，
+                # 殘留的「全選本頁」勾選狀態（含其 shadow 記錄）套用到新的一批人身上會誤判，
+                # 因此一併清掉，比照上面「篩選條件改變時重置分頁」的做法。
+                # 個別候選人的實際勾選（_persist）刻意「不」清除：
+                # 使用者常見流程是先用某關鍵字挑幾位、再放寬/更換條件挑其他人，
+                # 最後統一送出推薦信；若換條件就清空已選名單，反而會弄丟先前的選擇。
+                for _k in list(st.session_state.keys()):
+                    if _k.startswith('select_all_page_') or _k.startswith('_select_all_shadow_'):
+                        del st.session_state[_k]
 
-        page_start = st.session_state['card_page'] * PAGE_SIZE
-        page_end   = min(page_start + PAGE_SIZE, total_filtered)
-        paged_df   = filtered_df.iloc[page_start:page_end]
+            page_start = st.session_state['card_page'] * PAGE_SIZE
+            page_end   = min(page_start + PAGE_SIZE, total_filtered)
+            paged_df   = filtered_df.iloc[page_start:page_end]
 
-        # ── 全選本頁 + 已選計數器 ────────────────────────────────
-        # 已勾選人數一律以 _persist（非 widget 的 plain dict）為準，
-        # 不能再掃描 email_sel_ 開頭的 session_state key——換頁後那些 key 已被清掉。
-        _sel_count = sum(1 for v in _persist.values() if v)
-        _page_codes = [str(r.get('104代碼', '')) for _, r in paged_df.iterrows()]
-        _all_key = f"select_all_page_{st.session_state['card_page']}"
-        # 「上一次全選狀態」改用獨立的 shadow key（plain dict 項目，非 widget），
-        # 不會被 Streamlit 的 stale-widget 清除機制動到，也不受 widget 本身
-        # 「使用者剛互動的值會在腳本重跑前就先寫入 session_state」的時序影響——
-        # 原本直接用 st.session_state.get(_all_key) 在 checkbox() 呼叫前讀值，
-        # 讀到的其實已經是「這次」的新值而非「上次」的值，導致偵測「使用者主動取消全選」
-        # 永遠偵測不到。
-        _all_shadow_key = f"_select_all_shadow_{st.session_state['card_page']}"
-        _prev_all_val = st.session_state.get(_all_shadow_key, False)
+            # ── 全選本頁 + 已選計數器 ────────────────────────────────
+            # 已勾選人數一律以 _persist（非 widget 的 plain dict）為準，
+            # 不能再掃描 email_sel_ 開頭的 session_state key——換頁後那些 key 已被清掉。
+            _sel_count = sum(1 for v in _persist.values() if v)
+            _page_codes = [str(r.get('104代碼', '')) for _, r in paged_df.iterrows()]
+            _all_key = f"select_all_page_{st.session_state['card_page']}"
+            # 「上一次全選狀態」改用獨立的 shadow key（plain dict 項目，非 widget），
+            # 不會被 Streamlit 的 stale-widget 清除機制動到，也不受 widget 本身
+            # 「使用者剛互動的值會在腳本重跑前就先寫入 session_state」的時序影響——
+            # 原本直接用 st.session_state.get(_all_key) 在 checkbox() 呼叫前讀值，
+            # 讀到的其實已經是「這次」的新值而非「上次」的值，導致偵測「使用者主動取消全選」
+            # 永遠偵測不到。
+            _all_shadow_key = f"_select_all_shadow_{st.session_state['card_page']}"
+            _prev_all_val = st.session_state.get(_all_shadow_key, False)
 
-        _hdr_col1, _hdr_col2 = st.columns([3, 2])
-        with _hdr_col1:
-            _cur_all_val = st.checkbox(
-                f"第 {st.session_state['card_page']+1} 頁全選",
-                key=_all_key,
-                value=_prev_all_val,
-            )
-            if _cur_all_val and not _prev_all_val:
-                # 使用者剛勾選全選 → 本頁全部設 True
-                for _c in _page_codes:
-                    st.session_state[f'email_sel_{_c}'] = True
-                    _persist[_c] = True
-            elif (not _cur_all_val) and _prev_all_val:
-                # 使用者剛取消全選 → 本頁全部設 False
-                for _c in _page_codes:
-                    st.session_state[f'email_sel_{_c}'] = False
-                    _persist[_c] = False
-            # else：狀態未變 → 不做任何事，個別勾選狀態保持不變
-            st.session_state[_all_shadow_key] = _cur_all_val
-            st.caption(f"共 {total_filtered} 位合格候選人　·　第 {page_start+1}–{page_end} 位")
-        with _hdr_col2:
-            _count_color = '#1e40af' if _sel_count else '#94a3b8'
-            st.markdown(
-                f'<div style="font-size:var(--fs-sm);color:{_count_color};font-weight:700;'
-                f'padding-top:6px;">📧 已勾選推薦：{_sel_count} 人</div>',
-                unsafe_allow_html=True
-            )
-
-        # 穩定度顏色映射
-        _stability_icon = {"高": "🟢", "中": "🟡", "低": "🔴"}
-
-        for idx, row in paged_df.iterrows():
-            original_data_match = [
-                d for d in st.session_state['raw_final_results']
-                if str(d.get('104代碼')) == str(row.get('104代碼'))
-            ]
-            cand_data = original_data_match[0] if original_data_match else {}
-            # 預先取 code（container key 跟下面 checkbox key 都需要，早於 with 區塊定義；
-            # 沿用同一段程式碼裡checkbox已經在用的104代碼當唯一性依據，而不是
-            # paged_df.iterrows() 給的 idx——.iloc切片不保證index沒有重複值）
-            _code_raw = str(row.get('104代碼', ''))
-
-            with st.container(border=True, key=f"card_cand_{_code_raw}"):
-
-                # ── Layer 1：標題與整體匹配戰情區 ──────────────────────
-                col_chk, col_h, col_m = st.columns([0.8, 4, 1])
-                with col_chk:
-                    st.write("")   # 上方留白對齊
-                    # 用 _persist（不受 fragment stale-widget 清除影響的 plain dict）
-                    # 當作 checkbox 的初始值來源；widget 自己的 key 在換頁時可能已被
-                    # Streamlit 清掉，用 value= 帶回上次記錄的值即可正確還原勾選狀態。
-                    _cur_email_sel = st.checkbox(
-                        "📧", key=f"email_sel_{_code_raw}",
-                        value=_persist.get(_code_raw, False),
-                        help="推薦給用人主管",
-                        label_visibility="collapsed")
-                    _persist[_code_raw] = _cur_email_sel
-                with col_h:
-                    grade     = str(row.get('綜合推薦度', '?'))
-                    wscore    = str(row.get('加權總分', '')).strip()
-                    name      = _html_module.escape(str(row.get('真實姓名', '?')))
-                    code      = _html_module.escape(_code_raw)
-                    def _s(val, fallback=''):
-                        v = str(val) if val is not None else ''
-                        return fallback if v.lower() in ('nan','none','null','') else v
-                    stab      = _s(row.get('穩定度評估'), '未知')
-                    commute   = _html_module.escape(_s(row.get('通勤評估'), ''))
-                    residence = _html_module.escape(_s(row.get('居住地'), ''))
-
-                    grade_letter = grade[0].upper() if grade else '?'
-                    # Grade 徽章顏色權威來源：hr_schema.GRADE_META（跟dashboard.py共用）
-                    _gm = _GRADE_META.get(grade_letter, _GRADE_DEFAULT)
-                    _gs = {
-                        'bg': _gm['bg'], 'color': _gm['fg'],
-                        'border': f"2px solid {_gm['border']}",
-                        'icon': _gm['icon'], 'accent': _gm['border'],
-                    }
-
-                    stab_cfg = {
-                        '高': ('#f0fdf4','#15803d'),
-                        '中': ('#fffbeb','#92400e'),
-                        '低': ('#fef2f2','#991b1b'),
-                    }.get(stab, ('var(--c-surface-2)', 'var(--c-text-muted)'))
-
-                    # 已推薦 badge：獨立渲染，不放進主 HTML f-string
-                    _rec_entries = _recommended_lookup.get(str(row.get('真實姓名', '')), [])
-                    if _rec_entries:
-                        _badge_html_parts = ''.join(
-                            f'<span style="display:inline-block;font-size:var(--fs-xs);'
-                            f'background:#f0fdf4;color:#15803d;'
-                            f'border:1px solid #86efac;border-radius:4px;'
-                            f'padding:2px 10px;margin-right:6px;font-weight:600;">'
-                            f'✅ 已推薦｜{_html_module.escape(_r["job"])} → '
-                            f'{_html_module.escape(_r["recipient"].split()[-1] if _r["recipient"] else "?")} · {_r["date"]}'
-                            f'</span>'
-                            for _r in _rec_entries
-                        )
-                        st.markdown(_badge_html_parts, unsafe_allow_html=True)
-
-                    st.markdown(f'''
-<div style="display:flex;align-items:stretch;gap:0;margin:-16px -16px 10px -16px;overflow:hidden;border-radius:8px 8px 0 0;">
-  <!-- 左側等級色條 -->
-  <div style="width:5px;flex-shrink:0;background:{_gs['accent']};border-radius:8px 0 0 0;"></div>
-  <div style="flex:1;padding:12px 16px 8px 14px;">
-    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-      <!-- Grade 徽章 -->
-      <div style="background:{_gs['bg']};color:{_gs['color']};
-                  border:{_gs['border']};
-                  font-family:var(--font-data);font-weight:800;font-size:var(--fs-base);
-                  padding:3px 13px;border-radius:6px;letter-spacing:.05em;white-space:nowrap;">
-        {_gs['icon']} {grade_letter}{f'　{wscore}' if wscore and wscore not in ('nan', 'None', '') else ''}
-      </div>
-      <!-- 姓名 -->
-      <span style="font-size:var(--fs-lg);font-weight:800;color:var(--c-text);letter-spacing:-.01em;">{name}</span>
-      <!-- 代碼 -->
-      <span style="font-family:var(--font-data);font-size:var(--fs-xs);color:var(--c-text-muted);
-                   background:var(--c-surface-2);padding:2px 8px;border-radius:4px;
-                   border:1px solid var(--c-border);">#{code}</span>
-      <!-- 穩定度 -->
-      <span style="font-size:var(--fs-xs);background:{stab_cfg[0]};color:{stab_cfg[1]};
-                   padding:2px 9px;border-radius:4px;font-weight:700;">
-        穩定度：{_html_module.escape(stab)}
-      </span>
-    </div>
-    <div style="font-size:var(--fs-xs);color:var(--c-text-muted);margin-top:5px;">
-      📍 {residence}　·　{commute}
-    </div>
-  </div>
-</div>
-''', unsafe_allow_html=True)
-
-                # P1（Fable架構審查）：核對/修正AI解析姓名原本要展開整個PDF區塊才看得到，
-                # 初篩一批20份履歷就是20次多餘點擊。姓名旁加一顆輕量popover快速修正，
-                # 下面「🔍 查看PDF原稿」的完整功能保留不動（要核對PDF原文才需要展開）。
-                def _apply_name_fix(fixed_name):
-                    for r in st.session_state['raw_final_results']:
-                        if str(r.get('104代碼')) == str(row.get('104代碼')):
-                            r['真實姓名'] = fixed_name
-                    st.session_state['final_report_df'] = format_df_for_display(
-                        [r for r in st.session_state['raw_final_results'] if r.get('初篩判定') == '合格']
-                    )
-                    _name_fix_jd = resolve_jd_name()
-                    if _name_fix_jd:
-                        update_candidate_field(_name_fix_jd, str(row.get('104代碼', '')), '真實姓名', fixed_name)
-                    st.rerun()
-
-                with st.popover("✎", help="快速校正AI解析的姓名"):
-                    _pop_new_name = st.text_input(
-                        "姓名", value=str(row.get('真實姓名', '')),
-                        key=f"name_edit_popover_{code}_{idx}", label_visibility="collapsed",
-                    )
-                    if _pop_new_name.strip() and _pop_new_name.strip() != str(row.get('真實姓名', '')):
-                        if st.button("✅ 套用", key=f"apply_name_popover_{code}_{idx}"):
-                            _apply_name_fix(_pop_new_name.strip())
-                    st.caption("要核對PDF原文請展開下方「🔍 查看PDF原稿」")
-
-                # ── PDF 截圖 + 名字修正欄 ────────────────────────────
-                edit_key = f"name_edit_{code}_{idx}"
-                src_file  = str(cand_data.get('來源檔案', row.get('來源檔案', '')))
-                _expander_key = f"pdf_exp_{code}_{idx}"
-                with st.expander("🔍 查看 PDF 原稿 ／ 修正姓名", expanded=False,
-                                 key=_expander_key):
-                    # ── 頂列：修正姓名 ＋ 下載按鈕 同一行（不管是否展開都要顯示）──
-                    jd_label   = re.sub(r'[\\/:*?"<>|]', '', str(resolve_jd_name() or '職缺'))
-                    name_label = re.sub(r'[\\/:*?"<>|]', '', str(row.get('真實姓名', '未知')))
-                    dl_filename = f"{time.strftime('%Y%m%d')}-{jd_label}-{name_label}.pdf"
-
-                    # 來源追蹤資訊（輕量，永遠顯示）
-                    _src_basename = _html_module.escape(os.path.basename(src_file) if src_file else '（未知）')
-                    _cand_code    = _html_module.escape(str(row.get('104代碼', '?')))
-                    _raw_name     = _html_module.escape(str(row.get('真實姓名', '?')))
-                    st.markdown(
-                        f'<div style="font-size:var(--fs-xs);color:#718096;line-height:1.6;'
-                        f'background:#f7fafc;border-left:3px solid #cbd5e0;'
-                        f'padding:6px 10px;border-radius:0 4px 4px 0;margin-bottom:8px;">'
-                        f'📂 {_src_basename}&nbsp;&nbsp;｜&nbsp;&nbsp;'
-                        f'🔑 {_cand_code}&nbsp;&nbsp;｜&nbsp;&nbsp;'
-                        f'👤 {_raw_name}<br>'
-                        f'<span style="color:#a0aec0;">⚠️ 姓名由正規表達式從 PDF 文字層擷取，若有誤請用下方欄位修正。</span>'
-                        f'</div>',
-                        unsafe_allow_html=True
-                    )
-
-                    # 修正姓名 ＋ 下載（永遠顯示，PDF 載入前也能用）
-                    _top_name_col, _top_dl_col = st.columns([3, 1])
-                    with _top_name_col:
-                        new_name = st.text_input(
-                            "✏️ 修正姓名",
-                            value=str(row.get('真實姓名', '')),
-                            key=edit_key,
-                            label_visibility="collapsed",
-                            placeholder="✏️ 修正姓名（若 PDF 名字有誤請在此更正）"
-                        )
-                    with _top_dl_col:
-                        # 用按鈕觸發載入（不依賴 expander 展開狀態，跨 Streamlit 版本可靠）
-                        _load_key = f"pdf_load_{code}_{idx}"
-                        if st.button("📄 載入原稿", key=f"loadpdf_{code}_{idx}", use_container_width=True):
-                            st.session_state[_load_key] = True
-                        _is_expanded = st.session_state.get(_load_key, False)
-                        if _is_expanded:
-                            _seg_idx = cand_data.get('pdf_segment_index')
-                            _preview_bytes, _preview_err = extract_candidate_pdf(
-                                src_file, str(row.get('104代碼', '')), pdf_segment_index=_seg_idx)
-                        else:
-                            _preview_bytes, _preview_err = None, None
-                        if _preview_bytes:
-                            st.download_button(
-                                label="💾 下載 PDF",
-                                data=_preview_bytes,
-                                file_name=dl_filename,
-                                mime="application/pdf",
-                                key=f"dl_pdf_{code}_{idx}",
-                                use_container_width=True
-                            )
-                        elif _is_expanded:
-                            st.caption(f"⚠️ 無 PDF — {_preview_err or '找不到頁面'}")
-
-                    if new_name.strip() and new_name.strip() != str(row.get('真實姓名', '')):
-                        if st.button("✅ 套用修正", key=f"apply_name_{code}_{idx}"):
-                            _apply_name_fix(new_name.strip())
-
-                    # ── PDF 渲染（展開後才執行，避免頁面大量 base64 拖垮效能）──
-                    if _is_expanded:
-                        if _preview_bytes:
-                            _total_pdf_pages = get_pdf_page_count(_preview_bytes)
-                            _imgs_b64 = []
-                            for _p in range(_total_pdf_pages):
-                                _pg_bytes = render_pdf_page(_preview_bytes, _p)
-                                if _pg_bytes:
-                                    _imgs_b64.append(base64.b64encode(_pg_bytes).decode())
-                            _pages_html = "".join(
-                                f'<img src="data:image/png;base64,{b64}" '
-                                f'style="display:block;margin:0 0 2px;max-width:none;" />'
-                                for b64 in _imgs_b64
-                            )
-                            _div_id = f"pdf_scroll_{code}_{idx}"
-                            st.markdown(
-                                f'<div id="{_div_id}" style="width:100%;height:680px;'
-                                f'overflow-x:auto;overflow-y:auto;border:1px solid #e2e8f0;'
-                                f'border-radius:6px;padding:0;background:#fff;">'
-                                f'{_pages_html}</div>'
-                                f'<script>var _el=document.getElementById("{_div_id}");if(_el)_el.scrollTop=0;</script>',
-                                unsafe_allow_html=True
-                            )
-                        elif _preview_err:
-                            st.caption(f"⚠️ 找不到 PDF — {_preview_err}")
-
-                with col_m:
-                    _score_raw = str(row.get('技能契合分數', '') or '').replace('/10', '').strip()
-                    try:
-                        score_val = int(float(_score_raw)) if _score_raw else 0
-                    except (ValueError, TypeError):
-                        score_val = 0
-                    st.metric(label="🎯 技能契合度", value=f"{score_val}/10")
-
-                # ── Layer 1.5 + Layer 2：左右並排，減少垂直捲動 ────────
-                col_left, col_right = st.columns([1, 1])
-
-                with col_left:
-                    # Layer 1.5：近期工作軌跡（單一 HTML 區塊，消除 widget 間距）
-                    recent_exp = cand_data.get('最近三份經歷', [])
-                    exp_rows = ""
-                    if recent_exp and isinstance(recent_exp, list):
-                        for exp in recent_exp:
-                            period  = _html_module.escape(str(exp.get('期間', '')))
-                            company = _html_module.escape(str(exp.get('公司', '')))
-                            title   = _html_module.escape(str(exp.get('職稱', '')))
-                            months  = _html_module.escape(str(exp.get('月數', '')))
-                            exp_rows += (
-                                f'<div style="margin-bottom:5px;line-height:1.5;">'
-                                f'<code style="font-family:var(--font-data);font-size:var(--fs-xs);'
-                                f'color:var(--c-text-muted);background:var(--c-surface-2);'
-                                f'padding:1px 5px;border-radius:3px;">{period}</code> '
-                                f'<b style="color:var(--c-text);">{company}</b> '
-                                f'<span style="color:var(--c-text-muted);">{title}</span> '
-                                f'<span style="font-family:var(--font-data);font-size:var(--fs-xs);'
-                                f'color:var(--c-text-muted);">({months}月)</span>'
-                                f'</div>'
-                            )
-                    else:
-                        exp_rows = '<div style="color:var(--c-text-muted);font-style:italic;">無工作經歷資料</div>'
-
-                    gap = cand_data.get('最大空窗期', '無')
-                    gap_badge = ""
-                    if gap and gap != '無':
-                        gap_match = re.search(r'(\d+)', str(gap))
-                        gap_months = int(gap_match.group(1)) if gap_match else 0
-                        if gap_months > 2:
-                            gap_badge = (
-                                f'<div style="margin-top:6px;display:inline-flex;align-items:center;gap:4px;'
-                                f'background:var(--c-warn-bg);border:1px solid var(--c-warn-border);'
-                                f'border-radius:4px;padding:2px 8px;font-size:var(--fs-xs);color:var(--c-warn);">'
-                                f'⚠️ 空窗期 {_html_module.escape(str(gap))}</div>'
-                            )
-
-                    st.markdown(
-                        f'<div style="font-size:var(--fs-sm);line-height:1.6;font-family:var(--font-ui);">'
-                        f'<div style="font-weight:700;color:var(--c-primary);margin-bottom:7px;'
-                        f'font-size:var(--fs-xs);text-transform:uppercase;letter-spacing:.05em;">📋 近期工作軌跡</div>'
-                        f'{exp_rows}{gap_badge}'
-                        f'</div>',
-                        unsafe_allow_html=True
-                    )
-
-                with col_right:
-                    # Layer 2：維度評分（單一 HTML 區塊 + 自訂進度條）
-                    dynamic_data = cand_data.get('dynamic_scores', [])
-                    dim_rows = ""
-                    if dynamic_data and isinstance(dynamic_data, list):
-                        for d in dynamic_data:
-                            dim    = _html_module.escape(str(d.get('dimension', '')))
-                            # Fix #2: AI 偶爾回傳 "N/A" 或空字串，int() 需保護
-                            try:
-                                score = min(max(int(str(d.get('score', 0)).split('/')[0].strip()), 0), 10)
-                            except (ValueError, TypeError):
-                                score = 0
-                            reason = _html_module.escape(str(d.get('reason', '')))
-                            pct    = score * 10
-                            bar_c  = "var(--c-ok)" if score >= 7 else ("var(--c-warn)" if score >= 4 else "var(--c-err)")
-                            dim_rows += (
-                                f'<div style="margin-bottom:9px;">'
-                                f'<div style="display:flex;justify-content:space-between;'
-                                f'align-items:baseline;margin-bottom:3px;">'
-                                f'<span style="font-size:var(--fs-sm);font-weight:600;color:var(--c-text);">{dim}</span>'
-                                f'<code style="font-family:var(--font-data);font-size:var(--fs-xs);'
-                                f'font-variant-numeric:tabular-nums;color:var(--c-text-muted);">{score}/10</code>'
-                                f'</div>'
-                                f'<div style="background:var(--c-surface-2);border-radius:3px;height:5px;">'
-                                f'<div style="background:{bar_c};width:{pct}%;height:100%;border-radius:3px;'
-                                f'transition:width .3s ease;"></div>'
-                                f'</div>'
-                                + (f'<div style="font-size:var(--fs-xs);color:var(--c-text-muted);margin-top:3px;'
-                                   f'line-height:1.4;">↳ {reason}</div>' if reason else '')
-                                + '</div>'
-                            )
-                    else:
-                        dim_rows = '<div style="color:var(--c-text-muted);font-style:italic;">無維度資料</div>'
-
-                    st.markdown(
-                        f'<div style="font-size:var(--fs-sm);line-height:1.5;font-family:var(--font-ui);">'
-                        f'<div style="font-weight:700;color:var(--c-primary);margin-bottom:7px;'
-                        f'font-size:var(--fs-xs);text-transform:uppercase;letter-spacing:.05em;">📊 維度評分</div>'
-                        f'{dim_rows}'
-                        f'</div>',
-                        unsafe_allow_html=True
-                    )
-
-                # ── Layer 3：亮點與地雷（帶色底的雙欄）────────────────────
-                _pros_raw = str(row.get('客觀戰功亮點', '') or '')
-                _cons_raw = str(row.get('缺口與潛在地雷', '') or '')
-                pros = _html_module.escape(_pros_raw if _pros_raw.lower() not in ('nan','none','null','') else '無')
-                cons = _html_module.escape(_cons_raw if _cons_raw.lower() not in ('nan','none','null','') else '無')
+            _hdr_col1, _hdr_col2 = st.columns([3, 2])
+            with _hdr_col1:
+                _cur_all_val = st.checkbox(
+                    f"第 {st.session_state['card_page']+1} 頁全選",
+                    key=_all_key,
+                    value=_prev_all_val,
+                )
+                if _cur_all_val and not _prev_all_val:
+                    # 使用者剛勾選全選 → 本頁全部設 True
+                    for _c in _page_codes:
+                        st.session_state[f'email_sel_{_c}'] = True
+                        _persist[_c] = True
+                elif (not _cur_all_val) and _prev_all_val:
+                    # 使用者剛取消全選 → 本頁全部設 False
+                    for _c in _page_codes:
+                        st.session_state[f'email_sel_{_c}'] = False
+                        _persist[_c] = False
+                # else：狀態未變 → 不做任何事，個別勾選狀態保持不變
+                st.session_state[_all_shadow_key] = _cur_all_val
+                st.caption(f"共 {total_filtered} 位合格候選人　·　第 {page_start+1}–{page_end} 位")
+            with _hdr_col2:
+                _count_color = '#1e40af' if _sel_count else '#94a3b8'
                 st.markdown(
-                    f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;'
-                    f'font-size:var(--fs-sm);margin-top:6px;font-family:var(--font-ui);">'
-                    f'<div style="background:var(--c-ok-bg);border:1px solid var(--c-ok-border);'
-                    f'border-radius:6px;padding:8px 10px;">'
-                    f'<div style="font-weight:700;color:var(--c-ok);font-size:var(--fs-xs);'
-                    f'text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;">✨ 戰功亮點</div>'
-                    f'<div style="color:var(--c-text);line-height:1.5;">{pros}</div></div>'
-                    f'<div style="background:var(--c-err-bg);border:1px solid var(--c-err-border);'
-                    f'border-radius:6px;padding:8px 10px;">'
-                    f'<div style="font-weight:700;color:var(--c-err);font-size:var(--fs-xs);'
-                    f'text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;">⚠️ 缺口地雷</div>'
-                    f'<div style="color:var(--c-text);line-height:1.5;">{cons}</div></div>'
-                    f'</div>',
+                    f'<div style="font-size:var(--fs-sm);color:{_count_color};font-weight:700;'
+                    f'padding-top:6px;">📧 已勾選推薦：{_sel_count} 人</div>',
                     unsafe_allow_html=True
                 )
 
-                # ── 未來適配建議（人才庫複利）────────────────────────────
-                _future_fit = str(row.get('未來適配建議', '') or cand_data.get('未來適配建議', '')).strip()
-                if _future_fit and _future_fit not in ('nan', 'None', '適配本職缺'):
+            # 穩定度顏色映射
+            _stability_icon = {"高": "🟢", "中": "🟡", "低": "🔴"}
+
+            for idx, row in paged_df.iterrows():
+                original_data_match = [
+                    d for d in st.session_state['raw_final_results']
+                    if str(d.get('104代碼')) == str(row.get('104代碼'))
+                ]
+                cand_data = original_data_match[0] if original_data_match else {}
+                # 預先取 code（container key 跟下面 checkbox key 都需要，早於 with 區塊定義；
+                # 沿用同一段程式碼裡checkbox已經在用的104代碼當唯一性依據，而不是
+                # paged_df.iterrows() 給的 idx——.iloc切片不保證index沒有重複值）
+                _code_raw = str(row.get('104代碼', ''))
+
+                with st.container(border=True, key=f"card_cand_{_code_raw}"):
+
+                    # ── Layer 1：標題與整體匹配戰情區 ──────────────────────
+                    col_chk, col_h, col_m = st.columns([0.8, 4, 1])
+                    with col_chk:
+                        st.write("")   # 上方留白對齊
+                        # 用 _persist（不受 fragment stale-widget 清除影響的 plain dict）
+                        # 當作 checkbox 的初始值來源；widget 自己的 key 在換頁時可能已被
+                        # Streamlit 清掉，用 value= 帶回上次記錄的值即可正確還原勾選狀態。
+                        _cur_email_sel = st.checkbox(
+                            "📧", key=f"email_sel_{_code_raw}",
+                            value=_persist.get(_code_raw, False),
+                            help="推薦給用人主管",
+                            label_visibility="collapsed")
+                        _persist[_code_raw] = _cur_email_sel
+                    with col_h:
+                        grade     = str(row.get('綜合推薦度', '?'))
+                        wscore    = str(row.get('加權總分', '')).strip()
+                        name      = _html_module.escape(str(row.get('真實姓名', '?')))
+                        code      = _html_module.escape(_code_raw)
+                        def _s(val, fallback=''):
+                            v = str(val) if val is not None else ''
+                            return fallback if v.lower() in ('nan','none','null','') else v
+                        stab      = _s(row.get('穩定度評估'), '未知')
+                        commute   = _html_module.escape(_s(row.get('通勤評估'), ''))
+                        residence = _html_module.escape(_s(row.get('居住地'), ''))
+
+                        grade_letter = grade[0].upper() if grade else '?'
+                        # Grade 徽章顏色權威來源：hr_schema.GRADE_META（跟dashboard.py共用）
+                        _gm = _GRADE_META.get(grade_letter, _GRADE_DEFAULT)
+                        _gs = {
+                            'bg': _gm['bg'], 'color': _gm['fg'],
+                            'border': f"2px solid {_gm['border']}",
+                            'icon': _gm['icon'], 'accent': _gm['border'],
+                        }
+
+                        stab_cfg = {
+                            '高': ('#f0fdf4','#15803d'),
+                            '中': ('#fffbeb','#92400e'),
+                            '低': ('#fef2f2','#991b1b'),
+                        }.get(stab, ('var(--c-surface-2)', 'var(--c-text-muted)'))
+
+                        # 已推薦 badge：獨立渲染，不放進主 HTML f-string
+                        _rec_entries = _recommended_lookup.get(str(row.get('真實姓名', '')), [])
+                        if _rec_entries:
+                            _badge_html_parts = ''.join(
+                                f'<span style="display:inline-block;font-size:var(--fs-xs);'
+                                f'background:#f0fdf4;color:#15803d;'
+                                f'border:1px solid #86efac;border-radius:4px;'
+                                f'padding:2px 10px;margin-right:6px;font-weight:600;">'
+                                f'✅ 已推薦｜{_html_module.escape(_r["job"])} → '
+                                f'{_html_module.escape(_r["recipient"].split()[-1] if _r["recipient"] else "?")} · {_r["date"]}'
+                                f'</span>'
+                                for _r in _rec_entries
+                            )
+                            st.markdown(_badge_html_parts, unsafe_allow_html=True)
+
+                        st.markdown(f'''
+    <div style="display:flex;align-items:stretch;gap:0;margin:-16px -16px 10px -16px;overflow:hidden;border-radius:8px 8px 0 0;">
+      <!-- 左側等級色條 -->
+      <div style="width:5px;flex-shrink:0;background:{_gs['accent']};border-radius:8px 0 0 0;"></div>
+      <div style="flex:1;padding:12px 16px 8px 14px;">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <!-- Grade 徽章 -->
+          <div style="background:{_gs['bg']};color:{_gs['color']};
+                      border:{_gs['border']};
+                      font-family:var(--font-data);font-weight:800;font-size:var(--fs-base);
+                      padding:3px 13px;border-radius:6px;letter-spacing:.05em;white-space:nowrap;">
+            {_gs['icon']} {grade_letter}{f'　{wscore}' if wscore and wscore not in ('nan', 'None', '') else ''}
+          </div>
+          <!-- 姓名 -->
+          <span style="font-size:var(--fs-lg);font-weight:800;color:var(--c-text);letter-spacing:-.01em;">{name}</span>
+          <!-- 代碼 -->
+          <span style="font-family:var(--font-data);font-size:var(--fs-xs);color:var(--c-text-muted);
+                       background:var(--c-surface-2);padding:2px 8px;border-radius:4px;
+                       border:1px solid var(--c-border);">#{code}</span>
+          <!-- 穩定度 -->
+          <span style="font-size:var(--fs-xs);background:{stab_cfg[0]};color:{stab_cfg[1]};
+                       padding:2px 9px;border-radius:4px;font-weight:700;">
+            穩定度：{_html_module.escape(stab)}
+          </span>
+        </div>
+        <div style="font-size:var(--fs-xs);color:var(--c-text-muted);margin-top:5px;">
+          📍 {residence}　·　{commute}
+        </div>
+      </div>
+    </div>
+    ''', unsafe_allow_html=True)
+
+                    # P1（Fable架構審查）：核對/修正AI解析姓名原本要展開整個PDF區塊才看得到，
+                    # 初篩一批20份履歷就是20次多餘點擊。姓名旁加一顆輕量popover快速修正，
+                    # 下面「🔍 查看PDF原稿」的完整功能保留不動（要核對PDF原文才需要展開）。
+                    def _apply_name_fix(fixed_name):
+                        for r in st.session_state['raw_final_results']:
+                            if str(r.get('104代碼')) == str(row.get('104代碼')):
+                                r['真實姓名'] = fixed_name
+                        st.session_state['final_report_df'] = format_df_for_display(
+                            [r for r in st.session_state['raw_final_results'] if r.get('初篩判定') == '合格']
+                        )
+                        _name_fix_jd = resolve_jd_name()
+                        if _name_fix_jd:
+                            update_candidate_field(_name_fix_jd, str(row.get('104代碼', '')), '真實姓名', fixed_name)
+                        st.rerun()
+
+                    with st.popover("✎", help="快速校正AI解析的姓名"):
+                        _pop_new_name = st.text_input(
+                            "姓名", value=str(row.get('真實姓名', '')),
+                            key=f"name_edit_popover_{code}_{idx}", label_visibility="collapsed",
+                        )
+                        if _pop_new_name.strip() and _pop_new_name.strip() != str(row.get('真實姓名', '')):
+                            if st.button("✅ 套用", key=f"apply_name_popover_{code}_{idx}"):
+                                _apply_name_fix(_pop_new_name.strip())
+                        st.caption("要核對PDF原文請展開下方「🔍 查看PDF原稿」")
+
+                    # ── PDF 截圖 + 名字修正欄 ────────────────────────────
+                    edit_key = f"name_edit_{code}_{idx}"
+                    src_file  = str(cand_data.get('來源檔案', row.get('來源檔案', '')))
+                    _expander_key = f"pdf_exp_{code}_{idx}"
+                    with st.expander("🔍 查看 PDF 原稿 ／ 修正姓名", expanded=False,
+                                     key=_expander_key):
+                        # ── 頂列：修正姓名 ＋ 下載按鈕 同一行（不管是否展開都要顯示）──
+                        jd_label   = re.sub(r'[\\/:*?"<>|]', '', str(resolve_jd_name() or '職缺'))
+                        name_label = re.sub(r'[\\/:*?"<>|]', '', str(row.get('真實姓名', '未知')))
+                        dl_filename = f"{time.strftime('%Y%m%d')}-{jd_label}-{name_label}.pdf"
+
+                        # 來源追蹤資訊（輕量，永遠顯示）
+                        _src_basename = _html_module.escape(os.path.basename(src_file) if src_file else '（未知）')
+                        _cand_code    = _html_module.escape(str(row.get('104代碼', '?')))
+                        _raw_name     = _html_module.escape(str(row.get('真實姓名', '?')))
+                        st.markdown(
+                            f'<div style="font-size:var(--fs-xs);color:#718096;line-height:1.6;'
+                            f'background:#f7fafc;border-left:3px solid #cbd5e0;'
+                            f'padding:6px 10px;border-radius:0 4px 4px 0;margin-bottom:8px;">'
+                            f'📂 {_src_basename}&nbsp;&nbsp;｜&nbsp;&nbsp;'
+                            f'🔑 {_cand_code}&nbsp;&nbsp;｜&nbsp;&nbsp;'
+                            f'👤 {_raw_name}<br>'
+                            f'<span style="color:#a0aec0;">⚠️ 姓名由正規表達式從 PDF 文字層擷取，若有誤請用下方欄位修正。</span>'
+                            f'</div>',
+                            unsafe_allow_html=True
+                        )
+
+                        # 修正姓名 ＋ 下載（永遠顯示，PDF 載入前也能用）
+                        _top_name_col, _top_dl_col = st.columns([3, 1])
+                        with _top_name_col:
+                            new_name = st.text_input(
+                                "✏️ 修正姓名",
+                                value=str(row.get('真實姓名', '')),
+                                key=edit_key,
+                                label_visibility="collapsed",
+                                placeholder="✏️ 修正姓名（若 PDF 名字有誤請在此更正）"
+                            )
+                        with _top_dl_col:
+                            # 用按鈕觸發載入（不依賴 expander 展開狀態，跨 Streamlit 版本可靠）
+                            _load_key = f"pdf_load_{code}_{idx}"
+                            if st.button("📄 載入原稿", key=f"loadpdf_{code}_{idx}", use_container_width=True):
+                                st.session_state[_load_key] = True
+                            _is_expanded = st.session_state.get(_load_key, False)
+                            if _is_expanded:
+                                _seg_idx = cand_data.get('pdf_segment_index')
+                                _preview_bytes, _preview_err = extract_candidate_pdf(
+                                    src_file, str(row.get('104代碼', '')), pdf_segment_index=_seg_idx)
+                            else:
+                                _preview_bytes, _preview_err = None, None
+                            if _preview_bytes:
+                                st.download_button(
+                                    label="💾 下載 PDF",
+                                    data=_preview_bytes,
+                                    file_name=dl_filename,
+                                    mime="application/pdf",
+                                    key=f"dl_pdf_{code}_{idx}",
+                                    use_container_width=True
+                                )
+                            elif _is_expanded:
+                                st.caption(f"⚠️ 無 PDF — {_preview_err or '找不到頁面'}")
+
+                        if new_name.strip() and new_name.strip() != str(row.get('真實姓名', '')):
+                            if st.button("✅ 套用修正", key=f"apply_name_{code}_{idx}"):
+                                _apply_name_fix(new_name.strip())
+
+                        # ── PDF 渲染（展開後才執行，避免頁面大量 base64 拖垮效能）──
+                        if _is_expanded:
+                            if _preview_bytes:
+                                _total_pdf_pages = get_pdf_page_count(_preview_bytes)
+                                _imgs_b64 = []
+                                for _p in range(_total_pdf_pages):
+                                    _pg_bytes = render_pdf_page(_preview_bytes, _p)
+                                    if _pg_bytes:
+                                        _imgs_b64.append(base64.b64encode(_pg_bytes).decode())
+                                _pages_html = "".join(
+                                    f'<img src="data:image/png;base64,{b64}" '
+                                    f'style="display:block;margin:0 0 2px;max-width:none;" />'
+                                    for b64 in _imgs_b64
+                                )
+                                _div_id = f"pdf_scroll_{code}_{idx}"
+                                st.markdown(
+                                    f'<div id="{_div_id}" style="width:100%;height:680px;'
+                                    f'overflow-x:auto;overflow-y:auto;border:1px solid #e2e8f0;'
+                                    f'border-radius:6px;padding:0;background:#fff;">'
+                                    f'{_pages_html}</div>'
+                                    f'<script>var _el=document.getElementById("{_div_id}");if(_el)_el.scrollTop=0;</script>',
+                                    unsafe_allow_html=True
+                                )
+                            elif _preview_err:
+                                st.caption(f"⚠️ 找不到 PDF — {_preview_err}")
+
+                    with col_m:
+                        _score_raw = str(row.get('技能契合分數', '') or '').replace('/10', '').strip()
+                        try:
+                            score_val = int(float(_score_raw)) if _score_raw else 0
+                        except (ValueError, TypeError):
+                            score_val = 0
+                        st.metric(label="🎯 技能契合度", value=f"{score_val}/10")
+
+                    # ── Layer 1.5 + Layer 2：左右並排，減少垂直捲動 ────────
+                    col_left, col_right = st.columns([1, 1])
+
+                    with col_left:
+                        # Layer 1.5：近期工作軌跡（單一 HTML 區塊，消除 widget 間距）
+                        recent_exp = cand_data.get('最近三份經歷', [])
+                        exp_rows = ""
+                        if recent_exp and isinstance(recent_exp, list):
+                            for exp in recent_exp:
+                                period  = _html_module.escape(str(exp.get('期間', '')))
+                                company = _html_module.escape(str(exp.get('公司', '')))
+                                title   = _html_module.escape(str(exp.get('職稱', '')))
+                                months  = _html_module.escape(str(exp.get('月數', '')))
+                                exp_rows += (
+                                    f'<div style="margin-bottom:5px;line-height:1.5;">'
+                                    f'<code style="font-family:var(--font-data);font-size:var(--fs-xs);'
+                                    f'color:var(--c-text-muted);background:var(--c-surface-2);'
+                                    f'padding:1px 5px;border-radius:3px;">{period}</code> '
+                                    f'<b style="color:var(--c-text);">{company}</b> '
+                                    f'<span style="color:var(--c-text-muted);">{title}</span> '
+                                    f'<span style="font-family:var(--font-data);font-size:var(--fs-xs);'
+                                    f'color:var(--c-text-muted);">({months}月)</span>'
+                                    f'</div>'
+                                )
+                        else:
+                            exp_rows = '<div style="color:var(--c-text-muted);font-style:italic;">無工作經歷資料</div>'
+
+                        gap = cand_data.get('最大空窗期', '無')
+                        gap_badge = ""
+                        if gap and gap != '無':
+                            gap_match = re.search(r'(\d+)', str(gap))
+                            gap_months = int(gap_match.group(1)) if gap_match else 0
+                            if gap_months > 2:
+                                gap_badge = (
+                                    f'<div style="margin-top:6px;display:inline-flex;align-items:center;gap:4px;'
+                                    f'background:var(--c-warn-bg);border:1px solid var(--c-warn-border);'
+                                    f'border-radius:4px;padding:2px 8px;font-size:var(--fs-xs);color:var(--c-warn);">'
+                                    f'⚠️ 空窗期 {_html_module.escape(str(gap))}</div>'
+                                )
+
+                        st.markdown(
+                            f'<div style="font-size:var(--fs-sm);line-height:1.6;font-family:var(--font-ui);">'
+                            f'<div style="font-weight:700;color:var(--c-primary);margin-bottom:7px;'
+                            f'font-size:var(--fs-xs);text-transform:uppercase;letter-spacing:.05em;">📋 近期工作軌跡</div>'
+                            f'{exp_rows}{gap_badge}'
+                            f'</div>',
+                            unsafe_allow_html=True
+                        )
+
+                    with col_right:
+                        # Layer 2：維度評分（單一 HTML 區塊 + 自訂進度條）
+                        dynamic_data = cand_data.get('dynamic_scores', [])
+                        dim_rows = ""
+                        if dynamic_data and isinstance(dynamic_data, list):
+                            for d in dynamic_data:
+                                dim    = _html_module.escape(str(d.get('dimension', '')))
+                                # Fix #2: AI 偶爾回傳 "N/A" 或空字串，int() 需保護
+                                try:
+                                    score = min(max(int(str(d.get('score', 0)).split('/')[0].strip()), 0), 10)
+                                except (ValueError, TypeError):
+                                    score = 0
+                                reason = _html_module.escape(str(d.get('reason', '')))
+                                pct    = score * 10
+                                bar_c  = "var(--c-ok)" if score >= 7 else ("var(--c-warn)" if score >= 4 else "var(--c-err)")
+                                dim_rows += (
+                                    f'<div style="margin-bottom:9px;">'
+                                    f'<div style="display:flex;justify-content:space-between;'
+                                    f'align-items:baseline;margin-bottom:3px;">'
+                                    f'<span style="font-size:var(--fs-sm);font-weight:600;color:var(--c-text);">{dim}</span>'
+                                    f'<code style="font-family:var(--font-data);font-size:var(--fs-xs);'
+                                    f'font-variant-numeric:tabular-nums;color:var(--c-text-muted);">{score}/10</code>'
+                                    f'</div>'
+                                    f'<div style="background:var(--c-surface-2);border-radius:3px;height:5px;">'
+                                    f'<div style="background:{bar_c};width:{pct}%;height:100%;border-radius:3px;'
+                                    f'transition:width .3s ease;"></div>'
+                                    f'</div>'
+                                    + (f'<div style="font-size:var(--fs-xs);color:var(--c-text-muted);margin-top:3px;'
+                                       f'line-height:1.4;">↳ {reason}</div>' if reason else '')
+                                    + '</div>'
+                                )
+                        else:
+                            dim_rows = '<div style="color:var(--c-text-muted);font-style:italic;">無維度資料</div>'
+
+                        st.markdown(
+                            f'<div style="font-size:var(--fs-sm);line-height:1.5;font-family:var(--font-ui);">'
+                            f'<div style="font-weight:700;color:var(--c-primary);margin-bottom:7px;'
+                            f'font-size:var(--fs-xs);text-transform:uppercase;letter-spacing:.05em;">📊 維度評分</div>'
+                            f'{dim_rows}'
+                            f'</div>',
+                            unsafe_allow_html=True
+                        )
+
+                    # ── Layer 3：亮點與地雷（帶色底的雙欄）────────────────────
+                    _pros_raw = str(row.get('客觀戰功亮點', '') or '')
+                    _cons_raw = str(row.get('缺口與潛在地雷', '') or '')
+                    pros = _html_module.escape(_pros_raw if _pros_raw.lower() not in ('nan','none','null','') else '無')
+                    cons = _html_module.escape(_cons_raw if _cons_raw.lower() not in ('nan','none','null','') else '無')
                     st.markdown(
-                        f'<div style="margin-top:8px;background:#f5f3ff;border:1px solid #c4b5fd;'
-                        f'border-radius:6px;padding:8px 10px;font-size:var(--fs-sm);">'
-                        f'<b style="color:#6d28d9;">🔭 未來適配</b>　'
-                        f'<span style="color:var(--c-text);">{_html_module.escape(_future_fit)}</span></div>',
+                        f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;'
+                        f'font-size:var(--fs-sm);margin-top:6px;font-family:var(--font-ui);">'
+                        f'<div style="background:var(--c-ok-bg);border:1px solid var(--c-ok-border);'
+                        f'border-radius:6px;padding:8px 10px;">'
+                        f'<div style="font-weight:700;color:var(--c-ok);font-size:var(--fs-xs);'
+                        f'text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;">✨ 戰功亮點</div>'
+                        f'<div style="color:var(--c-text);line-height:1.5;">{pros}</div></div>'
+                        f'<div style="background:var(--c-err-bg);border:1px solid var(--c-err-border);'
+                        f'border-radius:6px;padding:8px 10px;">'
+                        f'<div style="font-weight:700;color:var(--c-err);font-size:var(--fs-xs);'
+                        f'text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;">⚠️ 缺口地雷</div>'
+                        f'<div style="color:var(--c-text);line-height:1.5;">{cons}</div></div>'
+                        f'</div>',
                         unsafe_allow_html=True
                     )
 
-                # ── 人才庫狀態與再聯繫（Layer 2）─────────────────────────
-                with st.expander("🗂️ 人才庫管理（狀態 / 再聯繫）", expanded=False):
-                    _pool_jd = resolve_jd_name()
-                    _pcode = str(row.get('104代碼', ''))
-                    _STATUS = ["待定", "錄取", "備取", "未來可聯繫", "不適合"]
-                    _cur_status = str(row.get('人才狀態', '') or '').strip()
-                    if _cur_status not in _STATUS:
-                        _cur_status = "待定"
-                    pc1, pc2 = st.columns(2)
-                    new_status = pc1.selectbox("人才狀態", _STATUS, index=_STATUS.index(_cur_status),
-                                               key=f"pool_st_{_pcode}_{idx}")
-                    _nc_raw = str(row.get('下次聯繫日', '') or '')
-                    try:
-                        _nc_default = datetime.date.fromisoformat(_nc_raw[:10]) if _nc_raw else None
-                    except Exception:
-                        _nc_default = None
-                    next_contact = pc2.date_input("下次聯繫日", value=_nc_default,
-                                                  key=f"pool_nc_{_pcode}_{idx}")
-                    pc3, pc4 = st.columns(2)
-                    salary_exp = pc3.text_input("薪資期待", value=str(row.get('薪資期待', '') or ''),
-                                                key=f"pool_sal_{_pcode}_{idx}")
-                    avail_date = pc4.text_input("可到職日", value=str(row.get('可到職日', '') or ''),
-                                                key=f"pool_av_{_pcode}_{idx}")
-                    if st.button("💾 儲存人才庫資訊", key=f"pool_save_{_pcode}_{idx}"):
-                        _updates = {
-                            "人才狀態":   new_status,
-                            "下次聯繫日": next_contact.isoformat() if next_contact else "",
-                            "薪資期待":   salary_exp.strip(),
-                            "可到職日":   avail_date.strip(),
-                        }
-                        for r in st.session_state['raw_final_results']:
-                            if str(r.get('104代碼')) == _pcode:
-                                r.update(_updates)
-                        if _pool_jd:
-                            update_candidate_fields(_pool_jd, _pcode, _updates)
-                        st.toast(f"✅ 已更新 {row.get('真實姓名','')} 的人才庫狀態")
-                        st.rerun()
+                    # ── 未來適配建議（人才庫複利）────────────────────────────
+                    _future_fit = str(row.get('未來適配建議', '') or cand_data.get('未來適配建議', '')).strip()
+                    if _future_fit and _future_fit not in ('nan', 'None', '適配本職缺'):
+                        st.markdown(
+                            f'<div style="margin-top:8px;background:#f5f3ff;border:1px solid #c4b5fd;'
+                            f'border-radius:6px;padding:8px 10px;font-size:var(--fs-sm);">'
+                            f'<b style="color:#6d28d9;">🔭 未來適配</b>　'
+                            f'<span style="color:var(--c-text);">{_html_module.escape(_future_fit)}</span></div>',
+                            unsafe_allow_html=True
+                        )
 
-                # ── Layer 4：面試攻防與邀約策略 ─────────────────────
-                st.divider()
-                deep_qs    = cand_data.get('面試深挖題')
-                email_draft = cand_data.get('email_draft')
-                has_deep   = deep_qs and deep_qs not in ("無", "生成失敗")
+                    # ── 人才庫狀態與再聯繫（Layer 2）─────────────────────────
+                    with st.expander("🗂️ 人才庫管理（狀態 / 再聯繫）", expanded=False):
+                        _pool_jd = resolve_jd_name()
+                        _pcode = str(row.get('104代碼', ''))
+                        _STATUS = ["待定", "錄取", "備取", "未來可聯繫", "不適合"]
+                        _cur_status = str(row.get('人才狀態', '') or '').strip()
+                        if _cur_status not in _STATUS:
+                            _cur_status = "待定"
+                        pc1, pc2 = st.columns(2)
+                        new_status = pc1.selectbox("人才狀態", _STATUS, index=_STATUS.index(_cur_status),
+                                                   key=f"pool_st_{_pcode}_{idx}")
+                        _nc_raw = str(row.get('下次聯繫日', '') or '')
+                        try:
+                            _nc_default = datetime.date.fromisoformat(_nc_raw[:10]) if _nc_raw else None
+                        except Exception:
+                            _nc_default = None
+                        next_contact = pc2.date_input("下次聯繫日", value=_nc_default,
+                                                      key=f"pool_nc_{_pcode}_{idx}")
+                        pc3, pc4 = st.columns(2)
+                        salary_exp = pc3.text_input("薪資期待", value=str(row.get('薪資期待', '') or ''),
+                                                    key=f"pool_sal_{_pcode}_{idx}")
+                        avail_date = pc4.text_input("可到職日", value=str(row.get('可到職日', '') or ''),
+                                                    key=f"pool_av_{_pcode}_{idx}")
+                        if st.button("💾 儲存人才庫資訊", key=f"pool_save_{_pcode}_{idx}"):
+                            _updates = {
+                                "人才狀態":   new_status,
+                                "下次聯繫日": next_contact.isoformat() if next_contact else "",
+                                "薪資期待":   salary_exp.strip(),
+                                "可到職日":   avail_date.strip(),
+                            }
+                            for r in st.session_state['raw_final_results']:
+                                if str(r.get('104代碼')) == _pcode:
+                                    r.update(_updates)
+                            if _pool_jd:
+                                update_candidate_fields(_pool_jd, _pcode, _updates)
+                            st.toast(f"✅ 已更新 {row.get('真實姓名','')} 的人才庫狀態")
+                            st.rerun()
 
-                if has_deep:
-                    st.markdown("**⚔️ 面試題組**")
-                    st.info(deep_qs)
-                    _kp = cand_data.get('考察點')
-                    _rf = cand_data.get('紅旗訊號')
-                    if _kp:
-                        st.caption(f"✅ 考察點：{_kp}")
-                    if _rf:
-                        st.caption(f"🚩 紅旗訊號：{_rf}")
-                    if email_draft and email_draft != '生成失敗':
-                        st.markdown("**✉️ 104 聯繫信草稿（點右上角複製）**")
-                        st.code(email_draft, language="text")
-                else:
-                    if st.button("✨ 生成面試題與邀約信", key=f"btn_gen_{row.get('104代碼')}_{idx}"):
-                        with st.spinner("AI 極速客製中..."):
-                            _resume_text = cand_data.get('履歷原文', '無資料')
-                            _source = str(row.get('應徵來源', '') or cand_data.get('應徵來源', ''))
-                            _source_mode = "人才開發破冰" if _source in ("HR搜尋", "104配對") else "面試邀約"
-                            deep_prompt = load_prompt_template('interview_question', PROMPT_DEFAULTS['interview_question']).format(
-                                resume_text=_resume_text,
-                                job_name=resolve_jd_name() or '本職缺',
-                                active_must=st.session_state.get('must_input', ''),
-                                dim_names=[d['dimension'] for d in st.session_state.get('current_dimensions', [])],
-                                source_mode=_source_mode,
-                            )
-                            res_text = ask_gemini_json(deep_prompt)
-                            res_json = extract_json(res_text)
-                            if res_json:
-                                cand_data['面試深挖題'] = res_json.get('面試深挖題', '生成失敗')
-                                cand_data['考察點'] = res_json.get('考察點', '')
-                                cand_data['紅旗訊號'] = res_json.get('紅旗訊號', '')
-                                cand_data['email_draft'] = res_json.get('email_draft', '生成失敗')
-                                criteria_hash_deep = st.session_state.get('_criteria_hash') or hashlib.md5(
-                                    f"{st.session_state['must_input']}_{st.session_state['nice_input']}_{st.session_state['loc_input']}".encode('utf-8')
-                                ).hexdigest()
-                                code_val = row.get('104代碼')
-                                if code_val and str(code_val) != "未知代碼":
-                                    ck = f"{code_val}_{criteria_hash_deep}"
+                    # ── Layer 4：面試攻防與邀約策略 ─────────────────────
+                    st.divider()
+                    deep_qs    = cand_data.get('面試深挖題')
+                    email_draft = cand_data.get('email_draft')
+                    has_deep   = deep_qs and deep_qs not in ("無", "生成失敗")
+
+                    if has_deep:
+                        st.markdown("**⚔️ 面試題組**")
+                        st.info(deep_qs)
+                        _kp = cand_data.get('考察點')
+                        _rf = cand_data.get('紅旗訊號')
+                        if _kp:
+                            st.caption(f"✅ 考察點：{_kp}")
+                        if _rf:
+                            st.caption(f"🚩 紅旗訊號：{_rf}")
+                        if email_draft and email_draft != '生成失敗':
+                            st.markdown("**✉️ 104 聯繫信草稿（點右上角複製）**")
+                            st.code(email_draft, language="text")
+                    else:
+                        if st.button("✨ 生成面試題與邀約信", key=f"btn_gen_{row.get('104代碼')}_{idx}"):
+                            with st.spinner("AI 極速客製中..."):
+                                _resume_text = cand_data.get('履歷原文', '無資料')
+                                _source = str(row.get('應徵來源', '') or cand_data.get('應徵來源', ''))
+                                _source_mode = "人才開發破冰" if _source in ("HR搜尋", "104配對") else "面試邀約"
+                                deep_prompt = load_prompt_template('interview_question', PROMPT_DEFAULTS['interview_question']).format(
+                                    resume_text=_resume_text,
+                                    job_name=resolve_jd_name() or '本職缺',
+                                    active_must=st.session_state.get('must_input', ''),
+                                    dim_names=[d['dimension'] for d in st.session_state.get('current_dimensions', [])],
+                                    source_mode=_source_mode,
+                                )
+                                res_text = ask_gemini_json(deep_prompt)
+                                res_json = extract_json(res_text)
+                                if res_json:
+                                    cand_data['面試深挖題'] = res_json.get('面試深挖題', '生成失敗')
+                                    cand_data['考察點'] = res_json.get('考察點', '')
+                                    cand_data['紅旗訊號'] = res_json.get('紅旗訊號', '')
+                                    cand_data['email_draft'] = res_json.get('email_draft', '生成失敗')
+                                    criteria_hash_deep = st.session_state.get('_criteria_hash') or hashlib.md5(
+                                        f"{st.session_state['must_input']}_{st.session_state['nice_input']}_{st.session_state['loc_input']}".encode('utf-8')
+                                    ).hexdigest()
+                                    code_val = row.get('104代碼')
+                                    if code_val and str(code_val) != "未知代碼":
+                                        ck = f"{code_val}_{criteria_hash_deep}"
+                                    else:
+                                        content_h = hashlib.md5(cand_data.get('履歷原文', '')[:300].encode('utf-8')).hexdigest()[:8]
+                                        ck = f"unknown_{content_h}_{criteria_hash_deep}"
+                                    fresh_cache = load_cache_db()
+                                    if ck in fresh_cache:
+                                        fresh_cache[ck]['面試深挖題'] = cand_data['面試深挖題']
+                                        fresh_cache[ck]['考察點'] = cand_data['考察點']
+                                        fresh_cache[ck]['紅旗訊號'] = cand_data['紅旗訊號']
+                                        fresh_cache[ck]['email_draft'] = cand_data['email_draft']
+                                        save_cache_db(fresh_cache)
+                                    st.rerun()
                                 else:
-                                    content_h = hashlib.md5(cand_data.get('履歷原文', '')[:300].encode('utf-8')).hexdigest()[:8]
-                                    ck = f"unknown_{content_h}_{criteria_hash_deep}"
-                                fresh_cache = load_cache_db()
-                                if ck in fresh_cache:
-                                    fresh_cache[ck]['面試深挖題'] = cand_data['面試深挖題']
-                                    fresh_cache[ck]['考察點'] = cand_data['考察點']
-                                    fresh_cache[ck]['紅旗訊號'] = cand_data['紅旗訊號']
-                                    fresh_cache[ck]['email_draft'] = cand_data['email_draft']
-                                    save_cache_db(fresh_cache)
-                                st.rerun()
-                            else:
-                                st.error("生成失敗，請重試。")
+                                    st.error("生成失敗，請重試。")
 
-        # ── 分頁控制列 ──────────────────────────────────────
-        total_pages = max(1, (total_filtered + PAGE_SIZE - 1) // PAGE_SIZE)
-        if total_pages > 1:
-            pg_cols = st.columns([1, 2, 1])
-            with pg_cols[0]:
-                if st.button("◀ 上一頁", disabled=(st.session_state['card_page'] == 0)):
-                    st.session_state['card_page'] -= 1
-                    st.session_state['_scroll_top'] = True
-                    st.rerun()
-            with pg_cols[1]:
-                st.caption(f"第 {st.session_state['card_page']+1} / {total_pages} 頁")
-            with pg_cols[2]:
-                if st.button("下一頁 ▶", disabled=(st.session_state['card_page'] >= total_pages - 1)):
-                    st.session_state['card_page'] += 1
-                    st.session_state['_scroll_top'] = True
-                    st.rerun()
+            # ── 分頁控制列 ──────────────────────────────────────
+            total_pages = max(1, (total_filtered + PAGE_SIZE - 1) // PAGE_SIZE)
+            if total_pages > 1:
+                pg_cols = st.columns([1, 2, 1])
+                with pg_cols[0]:
+                    if st.button("◀ 上一頁", disabled=(st.session_state['card_page'] == 0)):
+                        st.session_state['card_page'] -= 1
+                        st.session_state['_scroll_top'] = True
+                        st.rerun()
+                with pg_cols[1]:
+                    st.caption(f"第 {st.session_state['card_page']+1} / {total_pages} 頁")
+                with pg_cols[2]:
+                    if st.button("下一頁 ▶", disabled=(st.session_state['card_page'] >= total_pages - 1)):
+                        st.session_state['card_page'] += 1
+                        st.session_state['_scroll_top'] = True
+                        st.rerun()
+        else:
+            # 沒有人AI合格，但淘汰名單裡可能還有人值得人工拉上來覆核推薦
+            # （下面的「🔼從淘汰名單額外加選推薦」區塊本來就是為了這個情境設計的，
+            # 之前卻被外層if final_raw...擋住整個消失，是這次真正要修的bug）。
+            st.warning("依據目前的門檻設定，AI 判定本次無人合格。")
 
         # ── 📧 推薦給用人主管 ─────────────────────────────────────
         st.divider()
@@ -4218,33 +4224,37 @@ def _render_results():
                                 st.error(f"❌ 寄信失敗：{_e}")
         # ─────────────────────────────────────────────────────────
 
-        st.divider()
-        st.subheader("📊 總表下載區")
-        st.dataframe(
-            filtered_df.drop(columns=['面試深挖題', 'email_draft', '履歷原文', 'dynamic_scores'], errors='ignore'),
-            width='stretch'
-        )
+        # 總表下載區依賴filtered_df，那是上面「合格名單」篩選器算出來的，
+        # AI判定無人合格時（final_raw空）沒有filtered_df可用，這裡就跳過——
+        # 淘汰名單本身在下面還有獨立的dataframe可以看，不會整個不見。
+        if final_raw is not None and not final_raw.empty:
+            st.divider()
+            st.subheader("📊 總表下載區")
+            st.dataframe(
+                filtered_df.drop(columns=['面試深挖題', 'email_draft', '履歷原文', 'dynamic_scores'], errors='ignore'),
+                width='stretch'
+            )
 
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            # Excel 欄位順序依 PRD 規範
-            excel_cols = ['綜合推薦度', '技能契合分數', '真實姓名', '104代碼',
-                          '最大空窗期', '穩定度評估', '最近三份經歷',
-                          '客觀戰功亮點', '缺口與潛在地雷', '面試深挖題', '居住地', '來源檔案']
-            export_df = filtered_df.copy()
-            # 若欄位不存在則略過
-            excel_cols = [c for c in excel_cols if c in export_df.columns]
-            export_df[excel_cols].to_excel(writer, index=False, sheet_name='精選戰略名單')
-            if rej_raw is not None and not rej_raw.empty:
-                rej_raw.to_excel(writer, index=False, sheet_name='淘汰名單')
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                # Excel 欄位順序依 PRD 規範
+                excel_cols = ['綜合推薦度', '技能契合分數', '真實姓名', '104代碼',
+                              '最大空窗期', '穩定度評估', '最近三份經歷',
+                              '客觀戰功亮點', '缺口與潛在地雷', '面試深挖題', '居住地', '來源檔案']
+                export_df = filtered_df.copy()
+                # 若欄位不存在則略過
+                excel_cols = [c for c in excel_cols if c in export_df.columns]
+                export_df[excel_cols].to_excel(writer, index=False, sheet_name='精選戰略名單')
+                if rej_raw is not None and not rej_raw.empty:
+                    rej_raw.to_excel(writer, index=False, sheet_name='淘汰名單')
 
-        st.download_button(
-            label="📥 下載目前畫面的名單 (Excel)",
-            data=output.getvalue(),
-            file_name=f"ECLIFE_AI_戰略池_{time.strftime('%Y%m%d')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary"
-        )
+            st.download_button(
+                label="📥 下載目前畫面的名單 (Excel)",
+                data=output.getvalue(),
+                file_name=f"ECLIFE_AI_戰略池_{time.strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary"
+            )
 
     else:
         st.warning("依據目前的門檻設定，AI 判定本次無人合格。")
