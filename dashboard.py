@@ -988,12 +988,14 @@ def page_overview():
     cand_map   = {c["candidate_id"]: c for c in all_cands if c.get("candidate_id")}
 
     # ── 指標列 ────────────────────────────────────────────────
-    active = sum(1 for c in all_cands if c.get("stage") not in ("hired", "rejected"))
+    # 原本有「在途候選人」（stage not in hired/rejected），但這個定義會把AI
+    # 判定不合格、HR根本不會再處理的人也算進去（AI不合格的人只要沒被HR手動
+    # 結案，stage還是screening，就被當成「在途」）——數字看起來大卻沒有實際
+    # 行動意義，跟下面漏斗的AI合格/HR推薦主管重複，直接拿掉不留半調子版本。
     this_week_ivs = [iv for iv in ivs_joined
                      if parse_dt(iv.get("scheduled_at")) and
                      week_start <= parse_dt(iv["scheduled_at"]).date() <= week_end]
-    m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("在途候選人", active)
+    m2, m3, m4, m5 = st.columns(4)
     m2.metric("待面試",     sum(1 for c in all_cands if c.get("stage") == "interview_scheduled"))
     m3.metric("本週面試",   len(this_week_ivs))
     m4.metric("已錄取",     sum(1 for c in all_cands if c.get("stage") == "hired"))
