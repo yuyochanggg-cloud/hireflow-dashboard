@@ -581,6 +581,9 @@ def fetch_all_candidates() -> list:
             "highlights":      s.get("客觀戰功亮點", ""),
             "gaps":            s.get("缺口與潛在地雷", ""),
             "screening_notes": a.get("初篩判定", s.get("初篩判定", "")),
+            # AI初篩結果（合格/不合格），供候選人頁預設過濾用；獨立欄位，
+            # 不要拿screening_notes字串做in判斷（那是自由文字判定理由）。
+            "screening_result": a.get("AI初篩狀態", ""),
             "note":            a.get("備註", ""),
             "stage_updated_at": a.get("人才狀態更新日", ""),
             # 結案前是卡在哪個階段（漏斗轉換率計算用：已結案的人流程狀態變成
@@ -1440,8 +1443,19 @@ def page_candidates():
         search = st.text_input("🔍 搜尋姓名 / 104代碼", key="c_search", label_visibility="collapsed",
                                placeholder="搜尋姓名 / 104代碼")
 
+    # 定位宣言（Fable架構審查）：資料全留（人才庫，一筆都不刪），但畫面預設
+    # 只給合格/進行中的人看——不合格/已結案的人要「主動打開」才看得到，
+    # 不是預設就把804筆全部倒出來。這兩個checkbox預設關閉。
+    f5, f6, _f_spacer = st.columns([2, 2, 3])
+    show_ai_reject = f5.checkbox("包含AI不合格（淘汰名單）", value=False, key="c_show_reject")
+    show_closed    = f6.checkbox("包含已結案候選人", value=False, key="c_show_closed")
+
     # Apply filters
     rows = all_cands
+    if not show_ai_reject:
+        rows = [c for c in rows if c.get("screening_result") != "不合格"]
+    if not show_closed:
+        rows = [c for c in rows if c.get("stage") != "rejected"]
     if sel_jid:
         rows = [c for c in rows if str(c.get("job_opening_id", "")) == str(sel_jid)]
     if sel_stage:
