@@ -412,7 +412,10 @@ from hr_schema import (
 # ── Sheets reader ─────────────────────────────────────────────
 def _sheet_to_dicts(sh, name: str) -> list:
     import time as _t
-    for attempt in range(3):
+    # 六/七張主檔每次快取過期都要各讀一次，短時間內密集操作（連續切頁、連續
+    # 重新整理）容易撞到Sheets API「每分鐘讀取次數」的配額上限。退讓從
+    # 1s→2s拉長到1s→2s→4s→8s（4次嘗試），撐過同一個配額窗口的機率高很多。
+    for attempt in range(4):
         try:
             ws = sh.worksheet(name)
             rows = ws.get_all_values()
@@ -430,8 +433,8 @@ def _sheet_to_dicts(sh, name: str) -> list:
                 result.append(d)
             return result
         except Exception as e:
-            if '429' in str(e) and attempt < 2:
-                _t.sleep(2 ** attempt)  # 1s → 2s 退讓
+            if '429' in str(e) and attempt < 3:
+                _t.sleep(2 ** attempt)  # 1s → 2s → 4s → 8s
                 continue
             st.error(f"讀取 {name} 失敗：{e}")
             return []
@@ -1233,8 +1236,8 @@ def page_kanban():
   padding: 10px 10px 11px !important; border-radius: 10px !important; gap: 0.95rem !important;
 }
 [class*="st-key-kb_card"] [data-testid="stButton"] button {
-  padding: 2px 4px !important; border-radius: 6px !important;
-  font-size: var(--fs-xs) !important; min-height: 1.55rem !important;
+  padding: 1px 3px !important; border-radius: 6px !important;
+  font-size: var(--fs-xs) !important; min-height: 1.25rem !important;
 }
 /* 三顆動作按鈕依語意上色，不再全部長一樣的灰色框 */
 [class*="st-key-kb_card"] [data-testid="stHorizontalBlock"] > div:nth-child(1) [data-testid="stButton"] button {
