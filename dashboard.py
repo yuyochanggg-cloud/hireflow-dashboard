@@ -1233,11 +1233,11 @@ def page_kanban():
     st.markdown("""
 <style>
 [class*="st-key-kb_card"] {
-  padding: 10px 10px 11px !important; border-radius: 10px !important; gap: 0.95rem !important;
+  padding: 10px 10px 11px !important; border-radius: 10px !important; gap: 1.1rem !important;
 }
 [class*="st-key-kb_card"] [data-testid="stButton"] button {
-  padding: 1px 3px !important; border-radius: 6px !important;
-  font-size: var(--fs-xs) !important; min-height: 1.25rem !important;
+  padding: 0px 2px !important; border-radius: 6px !important;
+  font-size: 0.6rem !important; min-height: 1rem !important;
 }
 /* 三顆動作按鈕依語意上色，不再全部長一樣的灰色框 */
 [class*="st-key-kb_card"] [data-testid="stHorizontalBlock"] > div:nth-child(1) [data-testid="stButton"] button {
