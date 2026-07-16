@@ -1320,10 +1320,20 @@ def page_kanban():
                         st.session_state[f"{bpfx}_note_open"] = not st.session_state.get(f"{bpfx}_note_open", False)
             else:
                 bc1, bc2, bc3 = st.columns(3)
+                _next_is_interview = bool(next_s) and next_s[0] == "interview_scheduled"
                 if next_s:
                     if bc1.button("→", key=f"{bpfx}_{next_s[0]}", use_container_width=True,
                                   help=f"推進到「{STAGE_LABEL[next_s[0]]}」"):
-                        if update_stage(cid, next_s[0]):
+                        if _next_is_interview:
+                            # 使用者反饋：推進到「約定面試」卻沒有順便問哪天面試，
+                            # 流程狀態變了但05_面試主檔沒有對應紀錄，之後行事曆也
+                            # 看不到——改成推進前先問日期/時間，一次填完不斷資料。
+                            # 用cid（application_id）當key而不是bpfx：確認排定後
+                            # 這張卡會移到下一個階段欄、bpfx跟著換，用cid才能在
+                            # 新位置繼續找到「加入Google行事曆」連結。
+                            st.session_state[f"iv_open_{cid}"] = True
+                            st.rerun()
+                        elif update_stage(cid, next_s[0]):
                             st.toast(f"✅ {name} → {STAGE_LABEL[next_s[0]]}")
                             st.rerun()
                 if has_rej:
@@ -1342,6 +1352,25 @@ def page_kanban():
                         st.session_state[f"{bpfx}_note_open"] = False
                         st.toast(f"✅ {name} 備註已更新")
                         st.rerun()
+
+            if st.session_state.get(f"iv_open_{cid}"):
+                iv_d = st.date_input("面試日期", value=datetime.now().date(), key=f"{bpfx}_iv_date")
+                iv_t = st.time_input("面試時間", value=datetime(2024, 1, 1, 10, 0).time(), key=f"{bpfx}_iv_time")
+                iv_itvr = st.text_input("面試官（可留空）", key=f"{bpfx}_iv_itvr")
+                if st.button("確認排定", key=f"{bpfx}_iv_confirm", type="primary"):
+                    sdt = datetime.combine(iv_d, iv_t)
+                    if update_stage(cid, "interview_scheduled") and save_interview({
+                        "candidate_id": c.get("candidate_id", ""), "application_id": cid,
+                        "job_id": c.get("job_opening_id", ""), "name": name,
+                        "scheduled_at": sdt.isoformat(), "interviewer": iv_itvr, "result": "pending",
+                    }):
+                        st.session_state[f"iv_open_{cid}"] = False
+                        st.session_state[f"iv_link_{cid}"] = gcal_link(f"面試：{name}", sdt, 60, "", "公司")
+                        st.toast(f"✅ {name} → 約定面試")
+                        st.rerun()
+            if st.session_state.get(f"iv_link_{cid}"):
+                st.link_button("📅 加入 Google 行事曆", st.session_state[f"iv_link_{cid}"],
+                                use_container_width=True)
 
     _EMPTY_SLOT = (
         '<div style="border:1.5px dashed #e2e8f0;border-radius:8px;min-height:56px;'
