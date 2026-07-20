@@ -919,6 +919,7 @@ def _build_master_rows(jd_name, candidates):
             '初篩完成',                             # 流程狀態
             '',                                     # 人才狀態更新日
             '',                                     # 備註
+            '',                                     # 結案前階段（結案時才由 update_stage 填）
         ])
 
         # 04_評分主檔 — key: score_id（col 0）
