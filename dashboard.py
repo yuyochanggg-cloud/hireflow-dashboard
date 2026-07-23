@@ -769,10 +769,20 @@ def update_stage(app_id: str, new_stage: str) -> bool:
         ws = sh.worksheet("03_應徵主檔")
         # 結案時把「原本卡在哪個階段」記下來，流程狀態一旦變成「已結案」就再
         # 也看不出來走到哪一步了——這欄供之後的漏斗轉換率計算用。
+        old_stage = FLOW_TO_STAGE.get(target.get("流程狀態", ""), "screening")
         if new_stage == "rejected" and "結案前階段" in headers:
             prestage_col = headers.index("結案前階段") + 1
             ws.update_cell(row_num, prestage_col, target.get("流程狀態", ""))
         ws.update_cell(row_num, flow_col, flow)
+        # 從「已面試」推進到更後面的階段，隱含面試結果是通過——但HR多半是
+        # 直接在看板/候選人頁按推進，沒有另外回頭去面試管理的記分卡把結果
+        # 填成「通過」，導致05_面試主檔那筆紀錄一直卡在「待定」，分析報表
+        # 的面試通過率因此永遠算成0%（使用者實際回報的落差）。這裡在推進
+        # 離開已面試階段時順便同步，只補「待定/空白」的情況，不覆蓋HR已經
+        # 明確填過的未通過。
+        if (old_stage == "interviewed" and new_stage not in ("interviewed", "rejected")
+                and STAGE_KEYS.index(new_stage) > STAGE_KEYS.index("interviewed")):
+            _sync_interview_pass_if_pending(app_id, target.get("candidate_id", ""))
         # 順便記錄「進入這個階段的日期」，供看板卡片顯示（例如「7/15 已傳邀約」）
         if "人才狀態更新日" in headers:
             updated_col = headers.index("人才狀態更新日") + 1
@@ -782,6 +792,31 @@ def update_stage(app_id: str, new_stage: str) -> bool:
     except Exception as e:
         st.error(f"更新失敗：{e}")
         return False
+
+def _sync_interview_pass_if_pending(app_id: str, candidate_id: str) -> None:
+    """從已面試推進到更後面階段時，把05_面試主檔對應那筆的「面試結果」從
+    待定/空白同步成「通過」——這是錦上添花的同步，找不到紀錄或寫入失敗
+    都不影響update_stage本身的推進動作，所以不回傳成功與否、不拋例外。
+    """
+    sh = _get_sheet()
+    if not sh:
+        return
+    try:
+        ws = sh.worksheet("05_面試主檔")
+        cached_ivs = _load_all_sheets().get("05_面試主檔", [])
+        target_iv = next((iv for iv in cached_ivs if iv.get("application_id") == app_id), None)
+        if not target_iv:
+            # 舊面試紀錄可能沒有application_id欄位，退回candidate_id比對
+            target_iv = next((iv for iv in cached_ivs if iv.get("candidate_id") == candidate_id), None)
+        if not target_iv or "_row" not in target_iv:
+            return
+        if str(target_iv.get("面試結果", "")).strip() in ("", "待定"):
+            headers = [k for k in target_iv.keys() if k != "_row"]
+            if "面試結果" in headers:
+                col = headers.index("面試結果") + 1
+                ws.update_cell(target_iv["_row"], col, "通過")
+    except Exception:
+        pass
 
 def retry_pending_syncs() -> tuple[int, int]:
     """重試 app.py 端寫入失敗、暫存在 pending_status_sync.json 的流程狀態更新。
