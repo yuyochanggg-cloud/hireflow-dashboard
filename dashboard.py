@@ -407,6 +407,7 @@ from hr_schema import (
     FLOW_TO_STAGE, STAGE_TO_FLOW,
     RESULT_MAP as _RESULT_MAP,
     STATUS_MAP as _STATUS_MAP,
+    CLOSE_REASONS, CLOSE_REASON_TO_INTERVIEW_NOTE,
 )
 
 # ── Sheets reader ─────────────────────────────────────────────
@@ -742,11 +743,17 @@ def _upsert_row(ws, key_col: str, data: dict) -> bool:
     return True
 
 # ── Write Wrappers ────────────────────────────────────────────
-def update_stage(app_id: str, new_stage: str) -> bool:
+def update_stage(app_id: str, new_stage: str, close_reason: str = "") -> bool:
     """app_id 是 application_id（一筆「人 × 職缺」的應徵紀錄），不是 candidate_id。
     2026-07-15 修正：舊版用 candidate_id 找列，同一人若同時應徵兩個職缺會抓到
     表格裡第一筆符合的列而改錯人（實際發生過：鄧旻翠同時應徵兩個職缺，在其中
     一個按推進，另一個被誤改）。改用 application_id 精準對應到唯一一列。
+
+    close_reason 只在 new_stage=="rejected" 時有意義（訊息未回/面試未到/
+    面試未通過/候選人婉拒，見hr_schema.CLOSE_REASONS）。2026-07-23新增：
+    之前結案完全沒記原因，事後查不出來為什麼結案、面試通過率也因此失真，
+    這裡把原因寫進「結案原因」欄，並且「面試未到/面試未通過」順便同步
+    05_面試主檔，不用再事後手動回補。
     """
     sh = _get_sheet()
     if not sh:
@@ -773,7 +780,18 @@ def update_stage(app_id: str, new_stage: str) -> bool:
         if new_stage == "rejected" and "結案前階段" in headers:
             prestage_col = headers.index("結案前階段") + 1
             ws.update_cell(row_num, prestage_col, target.get("流程狀態", ""))
+        if new_stage == "rejected" and close_reason and "結案原因" in headers:
+            reason_col = headers.index("結案原因") + 1
+            ws.update_cell(row_num, reason_col, close_reason)
         ws.update_cell(row_num, flow_col, flow)
+        # 結案原因是「面試未到」或「面試未通過」，順便同步一筆05_面試主檔
+        # 未通過紀錄，理由跟上面推進離開已面試自動同步通過是同一件事——
+        # 不要再靠事後回補，資料要在動作發生的當下就記對。
+        if new_stage == "rejected" and close_reason in CLOSE_REASON_TO_INTERVIEW_NOTE:
+            _sync_interview_fail_on_close(
+                app_id, target.get("candidate_id", ""), target.get("job_id", ""),
+                target.get("姓名", ""), CLOSE_REASON_TO_INTERVIEW_NOTE[close_reason],
+            )
         # 從「已面試」推進到更後面的階段，隱含面試結果是通過——但HR多半是
         # 直接在看板/候選人頁按推進，沒有另外回頭去面試管理的記分卡把結果
         # 填成「通過」，導致05_面試主檔那筆紀錄一直卡在「待定」，分析報表
@@ -815,6 +833,39 @@ def _sync_interview_pass_if_pending(app_id: str, candidate_id: str) -> None:
             if "面試結果" in headers:
                 col = headers.index("面試結果") + 1
                 ws.update_cell(target_iv["_row"], col, "通過")
+    except Exception:
+        pass
+
+def _sync_interview_fail_on_close(app_id: str, candidate_id: str, job_id: str,
+                                   name: str, note: str) -> None:
+    """結案原因選「面試未到」或「面試未通過」時，把05_面試主檔對應那筆的
+    面試結果明確寫成「未通過」（這是HR當下明確選擇的原因，不是被動推論，
+    所以直接覆蓋，不像_sync_interview_pass_if_pending只補待定/空白）；
+    如果根本沒有面試紀錄（例如面試未到，從沒真的排過面試/沒建過紀錄），
+    直接用save_interview建一筆，日期用今天（結案當下），備註寫結案原因。
+    """
+    sh = _get_sheet()
+    if not sh:
+        return
+    try:
+        cached_ivs = _load_all_sheets().get("05_面試主檔", [])
+        target_iv = next((iv for iv in cached_ivs if iv.get("application_id") == app_id), None)
+        if not target_iv:
+            target_iv = next((iv for iv in cached_ivs if iv.get("candidate_id") == candidate_id), None)
+        if target_iv and "_row" in target_iv:
+            ws = sh.worksheet("05_面試主檔")
+            headers = [k for k in target_iv.keys() if k != "_row"]
+            if "面試結果" in headers:
+                ws.update_cell(target_iv["_row"], headers.index("面試結果") + 1, "未通過")
+            if "面試官備註" in headers:
+                ws.update_cell(target_iv["_row"], headers.index("面試官備註") + 1, note)
+        else:
+            save_interview({
+                "candidate_id": candidate_id, "application_id": app_id,
+                "job_id": job_id, "name": name,
+                "scheduled_at": date.today().isoformat(), "interviewer": "",
+                "result": "fail", "notes": note,
+            })
     except Exception:
         pass
 
@@ -1380,9 +1431,11 @@ def page_kanban():
                             st.rerun()
                 if has_rej:
                     if bc2.button("✕", key=f"{bpfx}_rejected", use_container_width=True, help="結案"):
-                        if update_stage(cid, "rejected"):
-                            st.toast(f"{name} 已結案")
-                            st.rerun()
+                        # 結案原因（2026-07-23新增）：以前結案完全沒記原因，事後
+                        # 完全查不出來為什麼結案，用cid當key因為結案後卡片會消失/
+                        # 移動，用application_id才穩定。
+                        st.session_state[f"close_open_{cid}"] = True
+                        st.rerun()
                 if bc3.button("備" + ("●" if note else ""), key=f"{bpfx}_note_toggle",
                               use_container_width=True, help=note if note else "新增備註"):
                     st.session_state[f"{bpfx}_note_open"] = not st.session_state.get(f"{bpfx}_note_open", False)
@@ -1413,6 +1466,14 @@ def page_kanban():
             if st.session_state.get(f"iv_link_{cid}"):
                 st.link_button("📅 加入 Google 行事曆", st.session_state[f"iv_link_{cid}"],
                                 use_container_width=True)
+
+            if st.session_state.get(f"close_open_{cid}"):
+                close_reason = st.selectbox("結案原因", CLOSE_REASONS, key=f"{bpfx}_close_reason")
+                if st.button("確認結案", key=f"{bpfx}_close_confirm", type="primary"):
+                    if update_stage(cid, "rejected", close_reason=close_reason):
+                        st.session_state[f"close_open_{cid}"] = False
+                        st.toast(f"{name} 已結案（{close_reason}）")
+                        st.rerun()
 
     _EMPTY_SLOT = (
         '<div style="border:1.5px dashed #e2e8f0;border-radius:8px;min-height:56px;'
@@ -1578,9 +1639,16 @@ def _render_candidate_card(c: dict, all_jobs: list):
                         st.rerun()
             if stage not in ("rejected", "hired"):
                 if st.button("❌ 結案", key=f"rej_{cid}", use_container_width=True):
-                    if update_stage(cid, "rejected"):
-                        st.toast(f"{name} 已結案")
-                        st.rerun()
+                    st.session_state[f"close_open_{cid}"] = True
+                    st.rerun()
+
+        if st.session_state.get(f"close_open_{cid}"):
+            close_reason = st.selectbox("結案原因", CLOSE_REASONS, key=f"cand_close_reason_{cid}")
+            if st.button("確認結案", key=f"cand_close_confirm_{cid}", type="primary"):
+                if update_stage(cid, "rejected", close_reason=close_reason):
+                    st.session_state[f"close_open_{cid}"] = False
+                    st.toast(f"{name} 已結案（{close_reason}）")
+                    st.rerun()
 
         if st.session_state.get(f"iv_open_{cid}"):
             iv_d = st.date_input("面試日期", value=datetime.now().date(), key=f"cand_iv_date_{cid}")
