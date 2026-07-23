@@ -2240,18 +2240,23 @@ def page_analytics():
     # ── 招募漏斗 ──────────────────────────────────────────────
     with ch1:
         st.subheader("📊 招募漏斗")
-        # 計算每個 stage 曾經到達的人數
-        # 用「目前 stage 的 index >= stage_index」來估計
+        # 「曾經到達過」用累計判斷，已結案的人用「結案前階段」（prestage）回推
+        # 走到哪一步——跟page_overview的_ever_reached同一套邏輯，否則已結案的
+        # 人在這裡完全被排除，跟總覽頁的漏斗數字對不起來（使用者實際回報的落差）。
+        _stage_idx = {sk: i for i, sk in enumerate(STAGE_KEYS)}
+
+        def _ever_reached(c, stage_key):
+            stage = c.get("stage")
+            if stage == "rejected":
+                stage = c.get("prestage") or "screening"
+            return _stage_idx.get(stage, 0) >= _stage_idx.get(stage_key, 0)
+
         funnel_stages = [(s, STAGE_LABEL[s]) for s in STAGE_KEYS if s != "rejected"]
         funnel_keys, funnel_labels = zip(*funnel_stages) if funnel_stages else ([], [])
-        funnel_counts = []
-        for i, sk in enumerate(funnel_keys):
-            cnt = sum(
-                1 for c in cands_f
-                if STAGE_KEYS.index(c.get("stage", STAGE_KEYS[0])) >= i
-                   if c.get("stage") != "rejected"
-            )
-            funnel_counts.append(cnt)
+        funnel_counts = [
+            sum(1 for c in cands_f if _ever_reached(c, sk))
+            for sk in funnel_keys
+        ]
 
         fig_funnel = go.Figure(go.Funnel(
             y=funnel_labels, x=funnel_counts,
