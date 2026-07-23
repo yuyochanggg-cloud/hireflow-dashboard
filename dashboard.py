@@ -1139,10 +1139,12 @@ def page_overview():
 
     actions = []
 
-    # 在「已面試」超過 3 天仍未決定
+    # 在「已面試」超過 3 天仍未決定——用stage_updated_at（進入這個階段的日期），
+    # 不是created_at（履歷建檔日期，可能是幾個月前，會把剛面試完的人也誤判成
+    # 卡很久，這是找出的一個真bug，跟看板卡片用stage_updated_at顯示日期一致）
     for c in all_cands:
         if c.get("stage") == "interviewed":
-            dt = parse_dt(c.get("created_at"))
+            dt = parse_dt(c.get("stage_updated_at"))
             if dt and (datetime.now() - dt).days >= 3:
                 actions.append(f'⏳ **{c.get("name","?")}** — 已面試 {(datetime.now()-dt).days} 天，尚未進入錄取審核')
 
@@ -1526,10 +1528,17 @@ def _render_candidate_card(c: dict, all_jobs: list):
         )
         cs.markdown(stage_badge(stage), unsafe_allow_html=True)
         with ca:
-            next_s = STAGE_KEYS[cur_idx + 1: cur_idx + 3]
+            # 只給下一步（不是下兩步）、遇到interview_scheduled要先問日期，
+            # 跟看板的_kb_card同一套規則——這裡原本可以直接跳兩步、繞過看板
+            # 那邊「推進到約定面試先問日期」的保護，同一人在不同頁面推進
+            # 規則不一致，且會漏開05_面試主檔紀錄。
+            next_s = [s for s in STAGE_KEYS[cur_idx+1:cur_idx+2] if s != "rejected"]
             for ns in next_s:
                 if st.button(f"→ {STAGE_LABEL[ns]}", key=f"fwd_{cid}_{ns}", use_container_width=True):
-                    if update_stage(cid, ns):
+                    if ns == "interview_scheduled":
+                        st.session_state[f"iv_open_{cid}"] = True
+                        st.rerun()
+                    elif update_stage(cid, ns):
                         st.toast(f"✅ {name} → {STAGE_LABEL[ns]}")
                         st.rerun()
             if stage not in ("rejected", "hired"):
@@ -1537,6 +1546,25 @@ def _render_candidate_card(c: dict, all_jobs: list):
                     if update_stage(cid, "rejected"):
                         st.toast(f"{name} 已結案")
                         st.rerun()
+
+        if st.session_state.get(f"iv_open_{cid}"):
+            iv_d = st.date_input("面試日期", value=datetime.now().date(), key=f"cand_iv_date_{cid}")
+            iv_t = st.time_input("面試時間", value=datetime(2024, 1, 1, 10, 0).time(), key=f"cand_iv_time_{cid}")
+            iv_itvr = st.text_input("面試官（可留空）", key=f"cand_iv_itvr_{cid}")
+            if st.button("確認排定", key=f"cand_iv_confirm_{cid}", type="primary"):
+                sdt = datetime.combine(iv_d, iv_t)
+                if update_stage(cid, "interview_scheduled") and save_interview({
+                    "candidate_id": pcid, "application_id": cid,
+                    "job_id": c.get("job_opening_id", ""), "name": name,
+                    "scheduled_at": sdt.isoformat(), "interviewer": iv_itvr, "result": "pending",
+                }):
+                    st.session_state[f"iv_open_{cid}"] = False
+                    st.session_state[f"iv_link_{cid}"] = gcal_link(f"面試：{name}", sdt, 60, "", "公司")
+                    st.toast(f"✅ {name} → 約定面試")
+                    st.rerun()
+        if st.session_state.get(f"iv_link_{cid}"):
+            st.link_button("📅 加入 Google 行事曆", st.session_state[f"iv_link_{cid}"],
+                            use_container_width=True)
 
         with st.expander("詳細 / 快速安排面試", expanded=False):
             dc1, dc2 = st.columns(2)

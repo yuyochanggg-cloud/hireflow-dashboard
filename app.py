@@ -4225,27 +4225,31 @@ def _render_results():
                                 st.error(f"❌ 寄信失敗：{_e}")
         # ─────────────────────────────────────────────────────────
 
-        # 總表下載區依賴filtered_df，那是上面「合格名單」篩選器算出來的，
-        # AI判定無人合格時（final_raw空）沒有filtered_df可用，這裡就跳過——
-        # 淘汰名單本身在下面還有獨立的dataframe可以看，不會整個不見。
-        if final_raw is not None and not final_raw.empty:
+        # 總表下載區：同一批bug——之前寫死依賴filtered_df（上面「合格名單」
+        # 篩選器算出來的），AI判定無人合格時整個下載按鈕消失，連淘汰名單都
+        # 沒辦法匯出Excel，即使HR已經從淘汰名單手動加選了要推薦的人。
+        # 改成只要合格名單或淘汰名單其中之一有資料就給下載按鈕，「精選戰略
+        # 名單」分頁只在filtered_df存在時才寫入。
+        if (final_raw is not None and not final_raw.empty) or (rej_raw is not None and not rej_raw.empty):
             st.divider()
             st.subheader("📊 總表下載區")
-            st.dataframe(
-                filtered_df.drop(columns=['面試深挖題', 'email_draft', '履歷原文', 'dynamic_scores'], errors='ignore'),
-                width='stretch'
-            )
+            if final_raw is not None and not final_raw.empty:
+                st.dataframe(
+                    filtered_df.drop(columns=['面試深挖題', 'email_draft', '履歷原文', 'dynamic_scores'], errors='ignore'),
+                    width='stretch'
+                )
 
             output = BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                # Excel 欄位順序依 PRD 規範
-                excel_cols = ['綜合推薦度', '技能契合分數', '真實姓名', '104代碼',
-                              '最大空窗期', '穩定度評估', '最近三份經歷',
-                              '客觀戰功亮點', '缺口與潛在地雷', '面試深挖題', '居住地', '來源檔案']
-                export_df = filtered_df.copy()
-                # 若欄位不存在則略過
-                excel_cols = [c for c in excel_cols if c in export_df.columns]
-                export_df[excel_cols].to_excel(writer, index=False, sheet_name='精選戰略名單')
+                if final_raw is not None and not final_raw.empty:
+                    # Excel 欄位順序依 PRD 規範
+                    excel_cols = ['綜合推薦度', '技能契合分數', '真實姓名', '104代碼',
+                                  '最大空窗期', '穩定度評估', '最近三份經歷',
+                                  '客觀戰功亮點', '缺口與潛在地雷', '面試深挖題', '居住地', '來源檔案']
+                    export_df = filtered_df.copy()
+                    # 若欄位不存在則略過
+                    excel_cols = [c for c in excel_cols if c in export_df.columns]
+                    export_df[excel_cols].to_excel(writer, index=False, sheet_name='精選戰略名單')
                 if rej_raw is not None and not rej_raw.empty:
                     rej_raw.to_excel(writer, index=False, sheet_name='淘汰名單')
 
