@@ -1052,6 +1052,19 @@ def gcal_link(title: str, start_dt: datetime, duration_min=60, desc="", location
          "details": desc, "location": location}
     return "https://calendar.google.com/calendar/render?" + urllib.parse.urlencode(p)
 
+# 2026-07-27新增：面試會議室固定訂2R，行事曆標題/備註格式統一，四處「約定面試」
+# 排程入口（看板/候選人頁快速排程/候選人頁詳細排程/面試管理頁）都呼叫這一個，
+# 不再各自兜格式——避免同一個功能在不同頁面長得不一樣（跟結案原因同一種教訓）。
+INTERVIEW_ROOM = "會議室_總部-7-2R (6)"
+
+def interview_gcal_link(job_title: str, name: str, start_dt: datetime, duration_min=60) -> str:
+    jt = job_title or "未指定職缺"
+    return gcal_link(
+        f"(2R)面試-{jt}", start_dt, duration_min,
+        desc=f"{jt}-{name}",  # 候選人姓名的超連結由使用者自己在Google行事曆貼上
+        location=INTERVIEW_ROOM,
+    )
+
 # ══════════════════════════════════════════════════════════════
 # PAGE 1 — 本週 + 下週總覽
 # ══════════════════════════════════════════════════════════════
@@ -1369,6 +1382,8 @@ div:has(> [class*="st-key-kb_header"]) {
             )
     st.write("")
 
+    _kb_job_title_map = {j["id"]: j["title"] for j in all_jobs_with_data}
+
     # ── 共用：渲染單張候選人卡片 ──────────────────────────
     def _kb_card(c, jid, sk):
         cid    = c["id"]
@@ -1468,7 +1483,8 @@ div:has(> [class*="st-key-kb_header"]) {
                         "scheduled_at": sdt.isoformat(), "interviewer": iv_itvr, "result": "pending",
                     }):
                         st.session_state[f"iv_open_{cid}"] = False
-                        st.session_state[f"iv_link_{cid}"] = gcal_link(f"面試：{name}", sdt, 60, "", "公司")
+                        st.session_state[f"iv_link_{cid}"] = interview_gcal_link(
+                            _kb_job_title_map.get(jid, ""), name, sdt)
                         st.toast(f"✅ {name} → 約定面試")
                         st.rerun()
             if st.session_state.get(f"iv_link_{cid}"):
@@ -1670,7 +1686,7 @@ def _render_candidate_card(c: dict, all_jobs: list):
                     "scheduled_at": sdt.isoformat(), "interviewer": iv_itvr, "result": "pending",
                 }):
                     st.session_state[f"iv_open_{cid}"] = False
-                    st.session_state[f"iv_link_{cid}"] = gcal_link(f"面試：{name}", sdt, 60, "", "公司")
+                    st.session_state[f"iv_link_{cid}"] = interview_gcal_link(jtitle, name, sdt)
                     st.toast(f"✅ {name} → 約定面試")
                     st.rerun()
         if st.session_state.get(f"iv_link_{cid}"):
@@ -1702,7 +1718,7 @@ def _render_candidate_card(c: dict, all_jobs: list):
                 iv_date = qs1.date_input("日期", value=date.today() + timedelta(days=3), key=f"qd_{cid}")
                 iv_time = qs2.time_input("時間", value=datetime(2024,1,1,10,0).time(), key=f"qt_{cid}")
                 iv_itvr = qs3.text_input("面試官", key=f"qi_{cid}")
-                iv_loc  = st.text_input("地點", value="公司", key=f"ql_{cid}")
+                iv_loc  = st.text_input("地點", value=INTERVIEW_ROOM, key=f"ql_{cid}")
                 if st.button("確認安排", key=f"qsched_{cid}", type="primary"):
                     sdt = datetime.combine(iv_date, iv_time)
                     if save_interview({"candidate_id": pcid, "application_id": cid,
@@ -1710,7 +1726,7 @@ def _render_candidate_card(c: dict, all_jobs: list):
                                        "duration_minutes": 60, "interviewer": iv_itvr,
                                        "location": iv_loc, "result": "pending"}):
                         update_stage(cid, "interview_scheduled")
-                        link = gcal_link(f"面試：{name}（{jtitle}）", sdt, location=iv_loc)
+                        link = interview_gcal_link(jtitle, name, sdt)
                         st.success("✅ 面試已安排！")
                         st.link_button("📅 加入 Google 行事曆", link)
                         st.rerun()
@@ -2016,7 +2032,7 @@ def page_interviews():
                 iv_dur  = sc3.number_input("時長(分)", value=60, step=15, key="cal_dur")
                 sc4, sc5 = st.columns(2)
                 iv_itvr = sc4.text_input("面試官", key="cal_itvr")
-                iv_loc  = sc5.text_input("地點", value="公司", key="cal_loc")
+                iv_loc  = sc5.text_input("地點", value=INTERVIEW_ROOM, key="cal_loc")
                 iv_note = st.text_area("備注", key="cal_note")
                 if st.button("確認安排", type="primary", key="cal_sched"):
                     sdt = datetime.combine(iv_date, iv_time)
@@ -2027,7 +2043,8 @@ def page_interviews():
                         "location": iv_loc, "notes": iv_note, "result": "pending",
                     }):
                         update_stage(sel_c["id"], "interview_scheduled")
-                        link = gcal_link(f"面試：{sel_c['name']}", sdt, int(iv_dur), iv_note, iv_loc)
+                        sel_jtitle = job_map.get(str(sel_c.get("job_opening_id", "")), "")
+                        link = interview_gcal_link(sel_jtitle, sel_c["name"], sdt, int(iv_dur))
                         st.success(f"✅ 面試安排完成！")
                         st.link_button("📅 加入 Google 行事曆", link)
                         st.rerun()
