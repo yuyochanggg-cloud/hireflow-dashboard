@@ -2379,16 +2379,53 @@ def page_analytics():
     ivs_f   = [iv for iv in all_ivs  if in_range(iv, "scheduled_at")]
     hires_f = [h  for h  in all_hires if in_range(h,  "start_date")]
 
+    # 「曾經到達過」用累計判斷，已結案的人用「結案前階段」（prestage）回推
+    # 走到哪一步——跟page_overview的_ever_reached同一套邏輯，否則已結案的
+    # 人在這裡完全被排除，跟總覽頁的漏斗數字對不起來（使用者實際回報的落差）。
+    _stage_idx = {sk: i for i, sk in enumerate(STAGE_KEYS)}
+
+    def _ever_reached(c, stage_key):
+        stage = c.get("stage")
+        if stage == "rejected":
+            stage = c.get("prestage") or "screening"
+        return _stage_idx.get(stage, 0) >= _stage_idx.get(stage_key, 0)
+
+    # 面試通過/報到看的是「這個人最終有沒有」，不是「這段期間內發生的事件」，
+    # 所以join全量all_ivs/all_hires（不用ivs_f/hires_f那種依事件時間篩選的清單）。
+    _pass_app_ids  = {iv.get("application_id") for iv in all_ivs
+                       if iv.get("result") == "pass" and iv.get("application_id")}
+    _pass_cand_ids = {iv.get("candidate_id") for iv in all_ivs
+                       if iv.get("result") == "pass" and iv.get("candidate_id")}
+    _onboarded_cids = {h.get("candidate_id") for h in all_hires if h.get("actual_start_date")}
+
+    def _interview_passed(c):
+        return c.get("id") in _pass_app_ids or c.get("candidate_id") in _pass_cand_ids
+
+    def _onboarded(c):
+        return c.get("candidate_id") in _onboarded_cids
+
+    # 招募漏斗：對齊招募看板的階段語意，往前補「新進候選人」（不管AI篩過沒），
+    # 往後延伸到「面試通過」「面試通過率」以前只當獨立KPI、沒串進漏斗鏈）跟
+    # 「報到」（06_員工主檔實際報到日，比「已通知」更貼近真正的招募成果）。
+    _FUNNEL_STEPS = [
+        ("新進候選人", lambda c: True),
+        ("AI初篩通過", lambda c: c.get("screening_result") == "合格"),
+        ("HR推薦",     lambda c: _ever_reached(c, "recommended")),
+        ("主管覆核",   lambda c: _ever_reached(c, "invited")),
+        ("進行面試",   lambda c: _ever_reached(c, "interviewed")),
+        ("面試通過",   _interview_passed),
+        ("報到",       _onboarded),
+    ]
+    funnel_labels = [label for label, _ in _FUNNEL_STEPS]
+    funnel_counts = [sum(1 for c in cands_f if fn(c)) for _, fn in _FUNNEL_STEPS]
+
     # ── 指標行 ────────────────────────────────────────────────
     st.markdown("---")
     am1, am2, am3, am4 = st.columns(4)
-    am1.metric("新進候選人", len(cands_f))
-    am2.metric("進行面試", len(ivs_f))
-    hired_n = len(hires_f)
-    am3.metric("完成錄取", hired_n)
-    pass_rate = (sum(1 for iv in ivs_f if iv.get("result") == "pass") / len(ivs_f) * 100
-                 if ivs_f else 0)
-    am4.metric("面試通過率", f"{pass_rate:.0f}%")
+    am1.metric("新進候選人", funnel_counts[0])
+    am2.metric("進行面試",   funnel_counts[4])
+    am3.metric("面試通過",   funnel_counts[5])
+    am4.metric("報到",       funnel_counts[6])
     st.markdown("---")
 
     ch1, ch2 = st.columns(2)
@@ -2396,28 +2433,11 @@ def page_analytics():
     # ── 招募漏斗 ──────────────────────────────────────────────
     with ch1:
         st.subheader("📊 招募漏斗")
-        # 「曾經到達過」用累計判斷，已結案的人用「結案前階段」（prestage）回推
-        # 走到哪一步——跟page_overview的_ever_reached同一套邏輯，否則已結案的
-        # 人在這裡完全被排除，跟總覽頁的漏斗數字對不起來（使用者實際回報的落差）。
-        _stage_idx = {sk: i for i, sk in enumerate(STAGE_KEYS)}
-
-        def _ever_reached(c, stage_key):
-            stage = c.get("stage")
-            if stage == "rejected":
-                stage = c.get("prestage") or "screening"
-            return _stage_idx.get(stage, 0) >= _stage_idx.get(stage_key, 0)
-
-        funnel_stages = [(s, STAGE_LABEL[s]) for s in STAGE_KEYS if s != "rejected"]
-        funnel_keys, funnel_labels = zip(*funnel_stages) if funnel_stages else ([], [])
-        funnel_counts = [
-            sum(1 for c in cands_f if _ever_reached(c, sk))
-            for sk in funnel_keys
-        ]
-
         fig_funnel = go.Figure(go.Funnel(
             y=funnel_labels, x=funnel_counts,
             textinfo="value+percent initial",
-            marker={"color": ["#1e40af","#2563eb","#3b82f6","#60a5fa","#93c5fd"]},
+            marker={"color": ["#1e40af","#2563eb","#3b82f6","#60a5fa",
+                               "#93c5fd","#0ea5e9","#0891b2"]},
         ))
         fig_funnel.update_layout(margin=dict(l=0,r=0,t=10,b=0), height=300,
                                   plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
@@ -2528,10 +2548,7 @@ def page_analytics():
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine="openpyxl") as writer:
             # 摘要
-            summary = pd.DataFrame({
-                "指標": ["新進候選人", "進行面試", "完成錄取", "面試通過率"],
-                "數值": [len(cands_f), len(ivs_f), hired_n, f"{pass_rate:.0f}%"],
-            })
+            summary = pd.DataFrame({"指標": funnel_labels, "數值": funnel_counts})
             summary.to_excel(writer, sheet_name="摘要", index=False)
             # 候選人
             if cands_f:
