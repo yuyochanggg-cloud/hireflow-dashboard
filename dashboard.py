@@ -1348,17 +1348,25 @@ def page_kanban():
 [class*="st-key-kb_col"] {
   padding: 6px 6px !important; border-radius: 10px !important; background: #fafbfc !important;
 }
+/* 階段表頭凍結：往下捲動看很多職缺卡片時，標題列固定在畫面頂端。
+   Streamlit的st.container(key=...)會多包一層外層div，sticky要設在那層
+   外層（用:has()抓），設在st-key-kb_header自己身上因為它是flex子項不會生效。 */
+div:has(> [class*="st-key-kb_header"]) {
+  position: sticky !important; top: 2.9rem !important; z-index: 999 !important;
+  background: var(--c-bg, #ffffff) !important; padding-top: 4px !important; padding-bottom: 4px !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
     # ── 階段表頭：整頁只出現一次，底下每個職缺共用同一組欄位對齊 ──────
-    _hdr_cols = st.columns(len(BOARD_STAGES))
-    for _hc, (sk, label, icon, bg, fg) in zip(_hdr_cols, BOARD_STAGES):
-        _hc.markdown(
-            f'<div style="background:{bg};color:{fg};border-radius:4px;padding:5px 6px;'
-            f'font-size:var(--fs-sm);font-weight:800;text-align:center;">{icon} {label}</div>',
-            unsafe_allow_html=True,
-        )
+    with st.container(key="kb_header"):
+        _hdr_cols = st.columns(len(BOARD_STAGES))
+        for _hc, (sk, label, icon, bg, fg) in zip(_hdr_cols, BOARD_STAGES):
+            _hc.markdown(
+                f'<div style="background:{bg};color:{fg};border-radius:4px;padding:5px 6px;'
+                f'font-size:var(--fs-sm);font-weight:800;text-align:center;">{icon} {label}</div>',
+                unsafe_allow_html=True,
+            )
     st.write("")
 
     # ── 共用：渲染單張候選人卡片 ──────────────────────────

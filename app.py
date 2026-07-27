@@ -975,11 +975,11 @@ def sync_library_to_gsheet(jd_name, spreadsheet_id):
 
     s2_rows, s3_rows, s4_rows = _build_master_rows(jd_name, candidates)
 
-    from hr_schema import S3_PROTECT_ON_UPDATE
+    from hr_schema import S2_PROTECT_ON_UPDATE, S3_PROTECT_ON_UPDATE
 
     errors = []
     for ws_name, rows, key_cols, protect in [
-        ("02_候選人主檔", s2_rows, [0], None),   # key: candidate_id
+        ("02_候選人主檔", s2_rows, [0], S2_PROTECT_ON_UPDATE),   # key: candidate_id
         ("03_應徵主檔",   s3_rows, [0], S3_PROTECT_ON_UPDATE),   # key: application_id
         ("04_評分主檔",   s4_rows, [0], None),   # key: score_id
     ]:
