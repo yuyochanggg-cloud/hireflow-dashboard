@@ -20,9 +20,9 @@ import app  # module-level 有 st.set_page_config，bare mode 下是 no-op
 
 # ── 1. Schema 契約（守 2026-07-09 的 13欄/19欄錯位 bug）─────────────
 
-def test_s3_二十欄且key是application_id():
-    # 19 欄 + 2026-07-15 新增的「結案前階段」= 20
-    assert len(S3_COLS) == 20, "03_應徵主檔欄數變了，_build_master_rows 會寫錯位"
+def test_s3_二十一欄且key是application_id():
+    # 19 欄 + 「結案前階段」(2026-07-15) + 「結案原因」(2026-07-23) = 21
+    assert len(S3_COLS) == 21, "03_應徵主檔欄數變了，_build_master_rows 會寫錯位"
     assert S3_COLS[0] == "application_id"
     assert S2_COLS[0] == "candidate_id"
 

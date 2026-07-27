@@ -305,7 +305,8 @@ if 'temp_dir_ready' not in st.session_state:
 # FIX #1: 模型清單只保留確認存在的 model ID
 # ==========================================
 PREFERRED_MODELS = [
-    'gemini-3.5-flash',  # 主力，Agent Platform GA 2026-05-19
+    'gemini-3.6-flash',  # 主力，2026-07-27比對20筆履歷後換上：output比3.5-flash便宜17%，JSON解析更穩定
+    'gemini-3.5-flash',  # 備援
     'gemini-2.5-flash',  # 備援
 ]
 
@@ -920,6 +921,7 @@ def _build_master_rows(jd_name, candidates):
             '',                                     # 人才狀態更新日
             '',                                     # 備註
             '',                                     # 結案前階段（結案時才由 update_stage 填）
+            '',                                     # 結案原因（結案時才由 update_stage 填）
         ])
 
         # 04_評分主檔 — key: score_id（col 0）
