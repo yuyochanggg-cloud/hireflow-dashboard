@@ -2469,9 +2469,15 @@ def page_analytics():
                     months.append(dt.strftime("%Y-%m"))
             if months:
                 mo_df = pd.Series(months).value_counts().sort_index()
+                if len(mo_df) < 2:
+                    st.caption(f"目前區間只涵蓋 {mo_df.index[0]} 一個月，看不出趨勢——"
+                               "選「本季」「本年度」或「全部」才有多個月可比較。")
                 fig_mo = px.bar(x=mo_df.index, y=mo_df.values,
                                 labels={"x": "月份", "y": "人數"},
                                 color_discrete_sequence=["#1e40af"])
+                # 只有1個月資料時，plotly會誤把x軸判成連續時間軸，自動縮放出
+                # 微秒級的亂碼刻度（"23:59:59.9996"這種）——強制設成分類軸避免。
+                fig_mo.update_xaxes(type="category")
                 fig_mo.update_layout(margin=dict(l=0,r=0,t=10,b=0), height=280,
                                       plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
                 st.plotly_chart(fig_mo, use_container_width=True)
