@@ -2460,29 +2460,35 @@ def page_analytics():
 
     # ── 每月新增候選人趨勢 ────────────────────────────────────
     with ch3:
-        st.subheader("📈 每月新增候選人")
-        if cands_f:
-            months = []
-            for c in cands_f:
-                dt = parse_dt(c.get("created_at"))
-                if dt:
-                    months.append(dt.strftime("%Y-%m"))
-            if months:
-                mo_df = pd.Series(months).value_counts().sort_index()
-                if len(mo_df) < 2:
-                    st.caption(f"目前區間只涵蓋 {mo_df.index[0]} 一個月，看不出趨勢——"
-                               "選「本季」「本年度」或「全部」才有多個月可比較。")
-                fig_mo = px.bar(x=mo_df.index, y=mo_df.values,
-                                labels={"x": "月份", "y": "人數"},
-                                color_discrete_sequence=["#1e40af"])
-                # 只有1個月資料時，plotly會誤把x軸判成連續時間軸，自動縮放出
-                # 微秒級的亂碼刻度（"23:59:59.9996"這種）——強制設成分類軸避免。
-                fig_mo.update_xaxes(type="category")
-                fig_mo.update_layout(margin=dict(l=0,r=0,t=10,b=0), height=280,
-                                      plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
-                st.plotly_chart(fig_mo, use_container_width=True)
-        else:
-            st.info("此區間無資料。")
+        st.subheader("📈 每月新增候選人（最近6個月）")
+        # 這張圖的目的就是看趨勢，固定看最近6個月，不跟著上面的「統計區間」
+        # 選單走——選「本月」的話這張圖只會剩1個月的資料，完全看不出趨勢。
+        # 用all_cands（不是cands_f）當資料源，月份範圍自己算，沒人的月份補0，
+        # 不能讓沒資料的月份直接從圖上消失，不然會誤以為那個月剛好沒有候選人。
+        _month_labels = []
+        _cursor = date(today.year, today.month, 1)
+        for _ in range(6):
+            _month_labels.append(_cursor.strftime("%Y-%m"))
+            _cursor = (_cursor - timedelta(days=1)).replace(day=1)
+        _month_labels.reverse()
+
+        _month_counts = {m: 0 for m in _month_labels}
+        for c in all_cands:
+            dt = parse_dt(c.get("created_at"))
+            if dt:
+                m = dt.strftime("%Y-%m")
+                if m in _month_counts:
+                    _month_counts[m] += 1
+
+        fig_mo = px.bar(x=_month_labels, y=[_month_counts[m] for m in _month_labels],
+                        labels={"x": "月份", "y": "人數"},
+                        color_discrete_sequence=["#1e40af"])
+        # 只有1個月資料時，plotly會誤把x軸判成連續時間軸，自動縮放出
+        # 微秒級的亂碼刻度（"23:59:59.9996"這種）——強制設成分類軸避免。
+        fig_mo.update_xaxes(type="category")
+        fig_mo.update_layout(margin=dict(l=0,r=0,t=10,b=0), height=280,
+                              plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+        st.plotly_chart(fig_mo, use_container_width=True)
 
     # ── 評等分布 ─────────────────────────────────────────────
     with ch4:
