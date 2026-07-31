@@ -1098,6 +1098,62 @@ def update_application_statuses_batch(spreadsheet_id, job_name, candidates, new_
             return [], [(c, f"批次更新失敗 {e}") for c, _ in ok_pairs] + fail_pairs
     return ok_pairs, fail_pairs
 
+def mark_hr_override_batch(spreadsheet_id, job_name, candidates):
+    """人工從淘汰名單覆蓋AI判定並推薦後，把這件事寫進03_應徵主檔：
+    HR初篩狀態=人工覆核通過＋備註記錄覆核日期與AI原判理由，AI初篩狀態維持
+    原值（不合格）不動——保留「AI當時怎麼判」跟「HR事後覆核」兩件事各自的
+    可稽核性，不能把兩者混在一起改寫（Opus 2026-07-27架構判斷）。
+    回傳 (ok_pairs, fail_pairs)，格式跟 update_application_statuses_batch 一致。
+    """
+    if not candidates:
+        return [], []
+    if not _GSPREAD_AVAILABLE:
+        return [], [(c, "請先執行 pip install gspread") for c in candidates]
+    if not spreadsheet_id:
+        return [], [(c, "尚未設定試算表 ID") for c in candidates]
+    try:
+        sh = _get_gsheet_client(spreadsheet_id)
+        ws = sh.worksheet("03_應徵主檔")
+        existing = ws.get_all_values()
+    except Exception as e:
+        return [], [(c, f"連線失敗 [{type(e).__name__}] {e}") for c in candidates]
+
+    if not existing:
+        return [], [(c, "03_應徵主檔為空") for c in candidates]
+    header = existing[0]
+    if "HR初篩狀態" not in header or "備註" not in header:
+        return [], [(c, "找不到「HR初篩狀態」或「備註」欄") for c in candidates]
+    hr_col_letter   = re.sub(r'\d+$', '', gspread.utils.rowcol_to_a1(1, header.index("HR初篩狀態") + 1))
+    note_col_letter = re.sub(r'\d+$', '', gspread.utils.rowcol_to_a1(1, header.index("備註") + 1))
+    note_idx = header.index("備註")
+    row_by_appid = {row[0]: i for i, row in enumerate(existing[1:], start=2) if row}
+
+    job_safe  = re.sub(r'[^\w\-]', '_', job_name)[:20]
+    today_str = time.strftime('%Y-%m-%d')
+    ok_pairs, fail_pairs, updates = [], [], []
+    for c in candidates:
+        code = str(c.get('104代碼', '') or '')
+        name = str(c.get('真實姓名', '') or '')
+        app_id = f"APP-{code}-{job_safe}"
+        row_i = row_by_appid.get(app_id)
+        if row_i is None:
+            fail_pairs.append((c, f"找不到（{app_id}）對應的應徵紀錄，請先同步一次"))
+            continue
+        old_row  = existing[row_i - 1]
+        old_note = old_row[note_idx] if len(old_row) > note_idx else ""
+        reason   = c.get('判定理由', '') or '（無記錄）'
+        new_note = f"{old_note}｜HR人工覆核通過（AI原判不合格：{reason}）{today_str}".strip("｜")
+        updates.append({"range": f"{hr_col_letter}{row_i}", "values": [["人工覆核通過"]]})
+        updates.append({"range": f"{note_col_letter}{row_i}", "values": [[new_note]]})
+        ok_pairs.append((c, name))
+
+    if updates:
+        try:
+            ws.batch_update(updates)
+        except Exception as e:
+            return [], [(c, f"批次更新失敗 {e}") for c, _ in ok_pairs] + fail_pairs
+    return ok_pairs, fail_pairs
+
 def sync_all_libraries_to_gsheet(spreadsheet_id):
     """同步所有職缺到六主檔。"""
     libs = list_all_libraries()
@@ -1194,8 +1250,14 @@ def build_email_body(selected_candidates, job_name):
         else:
             score_lines.append('  —')
 
+        lines.append(f"{grade_icon} {grade_letter} 級｜{name}（代碼：{code}）")
+        # 人工從淘汰名單拉上來的人，主管必須看得出跟AI真的判合格不是同一回事，
+        # 不然會誤以為AI推薦了這個人（Opus 2026-07-27架構判斷：這是資料完整性
+        # 漏洞，不是單純UI問題——沒有揭露，寄信推薦跟AI真正合格的人完全看不出差別）。
+        if cand.get('判定來源') == '人工覆蓋':
+            _override_reason = cand.get('判定理由', '') or '（無記錄）'
+            lines.append(f"  ※ AI 初篩判定不合格（理由：{_override_reason}），由 HR 人工覆核加選")
         lines += [
-            f"{grade_icon} {grade_letter} 級｜{name}（代碼：{code}）",
             "",
             "▌ 核心亮點",
             f"  {highlight}",
@@ -1311,8 +1373,12 @@ def backup_recommended_pdfs(job_name, selected_candidates):
     return saved
 
 
-def append_email_log(job_name, recipient_name, recipient_email, candidate_names, attached_count):
-    """追加一筆寄信紀錄到 email_log.json"""
+def append_email_log(job_name, recipient_name, recipient_email, candidate_names, attached_count,
+                      override_names=None):
+    """追加一筆寄信紀錄到 email_log.json。
+    override_names：這批人裡有哪些是AI判不合格、HR人工從淘汰名單拉上來推薦的
+    （2026-07-27新增，保留可稽核性，跟build_email_body的揭露機制同一組資料）。
+    """
     entry = {
         "sent_at":         time.strftime('%Y-%m-%d %H:%M'),
         "job_name":        job_name,
@@ -1320,6 +1386,7 @@ def append_email_log(job_name, recipient_name, recipient_email, candidate_names,
         "recipient_email": recipient_email,
         "candidates":      candidate_names,
         "count":           attached_count,
+        "override_names":  override_names or [],
     }
     logs = []
     if os.path.exists(EMAIL_LOG_FILE):
@@ -1725,6 +1792,32 @@ def get_pdf_page_count(pdf_bytes: bytes) -> int:
         return n
     except Exception:
         return 0
+
+def render_pdf_viewer(pdf_bytes: bytes, div_id: str) -> None:
+    """把PDF bytes渲染成可捲動的頁面預覽（每頁轉PNG後塞進同一個div）。
+    抽成獨立函式，讓合格候選人卡片跟「從淘汰名單拉回來」的精簡卡共用同一套
+    預覽體驗，不用各自兜一份——原本精簡卡那邊只有下載按鈕沒有預覽，是疏漏
+    不是刻意設計（Opus 2026-07-27 架構判斷）。
+    """
+    total_pages = get_pdf_page_count(pdf_bytes)
+    imgs_b64 = []
+    for p in range(total_pages):
+        pg_bytes = render_pdf_page(pdf_bytes, p)
+        if pg_bytes:
+            imgs_b64.append(base64.b64encode(pg_bytes).decode())
+    pages_html = "".join(
+        f'<img src="data:image/png;base64,{b64}" '
+        f'style="display:block;margin:0 0 2px;max-width:none;" />'
+        for b64 in imgs_b64
+    )
+    st.markdown(
+        f'<div id="{div_id}" style="width:100%;height:680px;'
+        f'overflow-x:auto;overflow-y:auto;border:1px solid #e2e8f0;'
+        f'border-radius:6px;padding:0;background:#fff;">'
+        f'{pages_html}</div>'
+        f'<script>var _el=document.getElementById("{div_id}");if(_el)_el.scrollTop=0;</script>',
+        unsafe_allow_html=True
+    )
 
 @st.cache_data(show_spinner=False)
 def extract_candidate_pdf(src_file, candidate_code, pdf_segment_index=None):
@@ -3687,26 +3780,7 @@ def _render_results():
                         # ── PDF 渲染（展開後才執行，避免頁面大量 base64 拖垮效能）──
                         if _is_expanded:
                             if _preview_bytes:
-                                _total_pdf_pages = get_pdf_page_count(_preview_bytes)
-                                _imgs_b64 = []
-                                for _p in range(_total_pdf_pages):
-                                    _pg_bytes = render_pdf_page(_preview_bytes, _p)
-                                    if _pg_bytes:
-                                        _imgs_b64.append(base64.b64encode(_pg_bytes).decode())
-                                _pages_html = "".join(
-                                    f'<img src="data:image/png;base64,{b64}" '
-                                    f'style="display:block;margin:0 0 2px;max-width:none;" />'
-                                    for b64 in _imgs_b64
-                                )
-                                _div_id = f"pdf_scroll_{code}_{idx}"
-                                st.markdown(
-                                    f'<div id="{_div_id}" style="width:100%;height:680px;'
-                                    f'overflow-x:auto;overflow-y:auto;border:1px solid #e2e8f0;'
-                                    f'border-radius:6px;padding:0;background:#fff;">'
-                                    f'{_pages_html}</div>'
-                                    f'<script>var _el=document.getElementById("{_div_id}");if(_el)_el.scrollTop=0;</script>',
-                                    unsafe_allow_html=True
-                                )
+                                render_pdf_viewer(_preview_bytes, f"pdf_scroll_{code}_{idx}")
                             elif _preview_err:
                                 st.caption(f"⚠️ 找不到 PDF — {_preview_err}")
 
@@ -4001,8 +4075,11 @@ def _render_results():
             # 拉上來的人不只是加進推薦名單，也要能像合格候選人一樣「看得到」——
             # 給一張精簡字卡（判定理由/穩定度/戰功亮點/缺口/未來適配建議）＋原始PDF，
             # 讓人工在決定要不要推薦之前，能實際看到 AI 為什麼判不合格、原文寫了什麼。
-            # 刻意不重用上面合格候選人那個 300 行的大卡片渲染邏輯（風險太高、耦合太深），
-            # 獨立寫一個精簡版，資訊夠審查用即可，不需要姓名修正/人才庫狀態這些編輯功能。
+            # 2026-07-27更新：這裡刻意不重用合格候選人那個300行的大卡片渲染邏輯
+            # （耦合太深、牽動分頁/統計卡/Excel匯出），維持獨立精簡版；但姓名修正、
+            # 人才庫狀態管理其實已經補齊（見下方expander），PDF也已改成跟合格候選人
+            # 同一套render_pdf_viewer預覽——精簡版現在只差「不做分頁/批次操作」，
+            # 不是功能閹割版（Opus架構判斷：舊註解描述的落差已經是過時資訊）。
             def _s2(_val, _fallback=''):
                 _v = str(_val) if _val is not None else ''
                 return _fallback if _v.lower() in ('nan', 'none', 'null', '') else _v
@@ -4073,6 +4150,9 @@ def _render_results():
                                 file_name=f"{time.strftime('%Y%m%d')}-{_pc.get('真實姓名','履歷')}.pdf",
                                 mime="application/pdf", key=f"rejpdf_dl_{_pc_code}",
                             )
+                            # 補上跟合格候選人一樣的PDF預覽，不再只有下載按鈕
+                            # （Opus 2026-07-27架構判斷：這是殘留疏漏，不是刻意設計）
+                            render_pdf_viewer(_pc_bytes, f"pdf_scroll_rej_{_pc_code}")
                         else:
                             st.caption(f"⚠️ 無 PDF — {_pc_err or '找不到頁面'}")
 
@@ -4132,6 +4212,13 @@ def _render_results():
                             st.toast(f"✅ 已更新 {_pc.get('真實姓名','')} 的人才庫狀態")
                             st.rerun()
 
+            # 標記「判定來源」：AI初篩狀態=不合格但被HR人工拉上來推薦的人，
+            # 跟真正AI判合格的人本質不同（可稽核性），下游build_email_body/
+            # mark_hr_override_batch都靠這個欄位判斷要不要揭露/另外寫HR初篩狀態
+            # （Opus 2026-07-27架構判斷：兩種來源混在同一個清單卻沒有標記，
+            # 是比UI落差更嚴重的資料完整性問題）。
+            for pc in _promoted_candidates:
+                pc['判定來源'] = '人工覆蓋'
             _sel_candidates = _sel_candidates + [
                 pc for pc in _promoted_candidates
                 if _rej_persist.get(str(pc.get('104代碼', '')), True)
@@ -4196,12 +4283,14 @@ def _render_results():
                                      if r['email'] == _email_to.strip()),
                                     _email_to.strip()
                                 )
+                                _override_cands = [c for c in _sel_candidates if c.get('判定來源') == '人工覆蓋']
                                 append_email_log(
                                     job_name=_job_name,
                                     recipient_name=_recip_name,
                                     recipient_email=_email_to.strip(),
                                     candidate_names=[c.get('真實姓名', '?') for c in _sel_candidates],
                                     attached_count=_attached,
+                                    override_names=[c.get('真實姓名', '?') for c in _override_cands],
                                 )
                                 _backed = backup_recommended_pdfs(_job_name, _sel_candidates)
                                 st.success(f"✅ 已寄出！附件 {_attached} 份｜已備份 {_backed} 份至「推薦備份/{_job_name}/」")
@@ -4223,6 +4312,22 @@ def _render_results():
                                             "以下候選人流程狀態未成功推進到 Sheets，已記入待補清單（側欄可重試）：\n"
                                             + "\n".join(f"{c.get('真實姓名', '?')}：{m}" for c, m in _fail_pairs)
                                         )
+                                    # 人工覆蓋來源的人，額外標記HR初篩狀態，跟AI初篩狀態
+                                    # （維持不合格）分開，保留「AI當時怎麼判」跟「HR事後
+                                    # 覆核」兩件事各自的可稽核性（Opus 2026-07-27架構判斷）。
+                                    # 不透過_add_pending_sync待補清單重試——那個機制假設
+                                    # new_status一律寫進「流程狀態」欄，這裡寫的是不同欄位
+                                    # （HR初篩狀態/備註），混用會讓重試時把錯的字串寫進流程狀態。
+                                    if _override_cands:
+                                        _ovr_ok, _ovr_fail = mark_hr_override_batch(
+                                            _status_sid, _job_name, _override_cands
+                                        )
+                                        if _ovr_fail:
+                                            st.warning(
+                                                "以下候選人的「HR人工覆核」標記未成功寫入 Sheets"
+                                                "（不影響已寄出的推薦信與流程狀態推進）：\n"
+                                                + "\n".join(f"{c.get('真實姓名', '?')}：{m}" for c, m in _ovr_fail)
+                                            )
                             except Exception as _e:
                                 st.error(f"❌ 寄信失敗：{_e}")
         # ─────────────────────────────────────────────────────────
