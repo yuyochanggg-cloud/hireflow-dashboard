@@ -1251,12 +1251,10 @@ def build_email_body(selected_candidates, job_name):
             score_lines.append('  —')
 
         lines.append(f"{grade_icon} {grade_letter} 級｜{name}（代碼：{code}）")
-        # 人工從淘汰名單拉上來的人，主管必須看得出跟AI真的判合格不是同一回事，
-        # 不然會誤以為AI推薦了這個人（Opus 2026-07-27架構判斷：這是資料完整性
-        # 漏洞，不是單純UI問題——沒有揭露，寄信推薦跟AI真正合格的人完全看不出差別）。
-        if cand.get('判定來源') == '人工覆蓋':
-            _override_reason = cand.get('判定理由', '') or '（無記錄）'
-            lines.append(f"  ※ AI 初篩判定不合格（理由：{_override_reason}），由 HR 人工覆核加選")
+        # 2026-07-28：不在推薦信裡揭露「AI判不合格、人工覆蓋」——使用者認為
+        # 這樣寫法暗示AI判斷才是預設基準，HR是在推翻它，語意上有問題（這個
+        # 功能存在的前提本來就是AI可能漏判）。可稽核性改在dashboard分析報表
+        # 統計「人工覆核率」呈現，不對主管揭露、只給HR自己看，見page_analytics()。
         lines += [
             "",
             "▌ 核心亮點",

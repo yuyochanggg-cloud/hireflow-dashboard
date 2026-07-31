@@ -590,6 +590,10 @@ def fetch_all_candidates() -> list:
             # 結案前是卡在哪個階段（漏斗轉換率計算用：已結案的人流程狀態變成
             # 「已結案」後，原本走到哪一步就看不出來了，靠這欄位回推）
             "prestage":        FLOW_TO_STAGE.get(a.get("結案前階段", ""), ""),
+            # AI判不合格、HR從淘汰名單人工拉上來推薦的人（app.py的
+            # mark_hr_override_batch寫入）。分析報表用這個算「人工覆核率」，
+            # 偏高代表AI評分prompt/維度可能需要檢視，不是對外揭露用途。
+            "hr_override":     a.get("HR初篩狀態", "") == "人工覆核通過",
         })
 
     # 候選人主檔裡有、但03_應徵主檔完全沒有對應列的人（極少見的邊界情況），
@@ -604,7 +608,7 @@ def fetch_all_candidates() -> list:
             "job_opening_id": "", "grade": "C", "stage": "screening",
             "created_at": c.get("初次進庫日期", ""), "stability": "", "commute": "",
             "highlights": "", "gaps": "", "screening_notes": "", "note": "",
-            "stage_updated_at": "", "prestage": "",
+            "stage_updated_at": "", "prestage": "", "hr_override": False,
         })
     return result
 
@@ -2442,6 +2446,20 @@ def page_analytics():
         fig_funnel.update_layout(margin=dict(l=0,r=0,t=10,b=0), height=300,
                                   plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
         st.plotly_chart(fig_funnel, use_container_width=True)
+
+        # 人工覆核率：不對主管揭露（推薦信裡不寫這個），只在這裡給HR自己看——
+        # AI判不合格、HR仍手動從淘汰名單拉上來推薦的比例。這個比例偏高，
+        # 代表AI評分Prompt或維度設計可能有問題（太嚴苛/抓錯重點），值得回頭
+        # 檢視，不是候選人本身的問題（使用者2026-07-28提出的用途）。
+        _hr_recommend_n = funnel_counts[2]  # HR推薦
+        _override_n = sum(1 for c in cands_f if c.get("hr_override"))
+        if _hr_recommend_n:
+            _override_rate = _override_n / _hr_recommend_n * 100
+            _rate_msg = f"🔼 人工覆核率：{_override_n}/{_hr_recommend_n}（{_override_rate:.0f}%）"
+            if _override_rate >= 20:
+                st.warning(f"{_rate_msg} ——偏高，建議檢視AI評分Prompt或評分維度是否過嚴／抓錯重點。")
+            else:
+                st.caption(f"{_rate_msg} ——AI判不合格、HR仍手動推薦的比例。")
 
     # ── 候選人來源分布 ────────────────────────────────────────
     with ch2:
