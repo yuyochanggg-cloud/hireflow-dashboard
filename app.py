@@ -1098,6 +1098,38 @@ def update_application_statuses_batch(spreadsheet_id, job_name, candidates, new_
             return [], [(c, f"批次更新失敗 {e}") for c, _ in ok_pairs] + fail_pairs
     return ok_pairs, fail_pairs
 
+def mark_audit_override(job_name, candidates):
+    """人工從淘汰名單覆蓋AI判定並推薦後，同步標記本機audit_log.json，讓
+    adverse_impact_audit.py（差別影響稽核腳本）知道這些人後來被HR判定通過，
+    不要繼續照當初AI的「不合格」把他們算進落選那一組。
+    audit_log.json在screening當下就寫死了初篩判定/綜合推薦度，覆蓋動作發生
+    在完全不同的時間點/session，只能事後找到同一筆key（104代碼_職缺）補標記。
+    找不到對應紀錄（極少見，例如audit_log.json被手動清過）就靜默略過，
+    不影響主流程（Sheets那邊的HR初篩狀態才是權威紀錄）。
+    """
+    if not candidates:
+        return
+    audit_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "audit_log.json")
+    if not os.path.exists(audit_path):
+        return
+    try:
+        with open(audit_path, "r", encoding="utf-8") as f:
+            records = json.load(f)
+    except Exception:
+        return
+    targets = {str(c.get('104代碼', '')) for c in candidates}
+    changed = False
+    for r in records:
+        if r.get("職缺") == job_name and str(r.get("104代碼", "")) in targets:
+            r["hr_override"] = True
+            changed = True
+    if changed:
+        try:
+            with open(audit_path, "w", encoding="utf-8") as f:
+                json.dump(records, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
 def mark_hr_override_batch(spreadsheet_id, job_name, candidates):
     """人工從淘汰名單覆蓋AI判定並推薦後，把這件事寫進03_應徵主檔：
     HR初篩狀態=人工覆核通過＋備註記錄覆核日期與AI原判理由，AI初篩狀態維持
@@ -4282,6 +4314,12 @@ def _render_results():
                                     _email_to.strip()
                                 )
                                 _override_cands = [c for c in _sel_candidates if c.get('判定來源') == '人工覆蓋']
+                                # 同步標記本機audit_log.json，讓差別影響稽核（adverse_impact_
+                                # audit.py）不再把這些人算成AI判定的「不合格」——這是純本機檔案
+                                # 操作，不依賴Sheets連線，跟下面的Sheets寫入分開、不因為Sheets
+                                # 失敗而跳過。
+                                if _override_cands:
+                                    mark_audit_override(_job_name, _override_cands)
                                 append_email_log(
                                     job_name=_job_name,
                                     recipient_name=_recip_name,
