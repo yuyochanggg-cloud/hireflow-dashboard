@@ -952,8 +952,51 @@ def _build_master_rows(jd_name, candidates):
 
     return s2_rows, s3_rows, s4_rows
 
+def _build_job_row(jd_name):
+    """組出01_職缺主檔的單一職缺列。跟_build_master_rows用同一套job_safe
+    規則（03_應徵主檔的job_id也是這樣算），確保dashboard.py用job_id比對
+    候選人跟職缺時對得起來。
+    2026-08-04修正：sync_library_to_gsheet原本只同步02/03/04三張表，職缺
+    本身從沒被寫進01_職缺主檔——新建職缺→跑篩選→寄推薦信全部正常運作，
+    但首頁/招募看板都讀不到這個職缺（01找不到對應列），因為沒有任何自動
+    流程會建立這筆列，只能靠使用者手動跑獨立的sync_to_gsheet.py CLI工具。
+    """
+    profiles = load_jd_profiles()
+    jd = profiles.get(jd_name, {})
+    job_safe = re.sub(r'[^\w\-]', '_', jd_name)[:20]
+    today = time.strftime('%Y-%m-%d')
+
+    dims = jd.get('dimensions') or []
+    dim_str = '、'.join(
+        f"{d.get('dimension', '')}({int(round(float(d.get('weight', 0) or 0) * 100))}%)"
+        for d in dims
+    )
+
+    job_status = 'active'
+    _safe_file = re.sub(r'[\\/:*?"<>|]', '_', str(jd_name))
+    _fpath = os.path.join(LIBRARY_DIR, f"{_safe_file}.json")
+    if os.path.exists(_fpath):
+        try:
+            with open(_fpath, 'r', encoding='utf-8') as f:
+                job_status = json.load(f).get('job_status', 'active')
+        except Exception:
+            pass
+
+    return [
+        job_safe, jd_name, '',                      # job_id, 職缺名稱, 部門（無資料來源）
+        str(jd.get('location', '') or ''),
+        str(jd.get('must', '') or ''),
+        str(jd.get('nice', '') or ''),
+        dim_str,
+        _JOB_STATUS_TO_FLOW.get(job_status, '招募中'),
+        today,   # 建立日期（僅新建列時採用，更新既有列時受S1_PROTECT_ON_UPDATE保護）
+        today,   # 最後更新（每次同步都覆寫）
+        '',      # 備註
+    ]
+
 def sync_library_to_gsheet(jd_name, spreadsheet_id):
-    """將指定職缺同步到六主檔（02/03/04），以 ID 為 key 做 upsert。
+    """將指定職缺同步到六主檔（01/02/03/04），以 ID 為 key 做 upsert。
+    01_職缺主檔一定會upsert職缺本身（不存在則新建），02/03/04才是候選人資料。
     回傳 (成功, 訊息)。
     """
     if not _GSPREAD_AVAILABLE:
@@ -973,12 +1016,14 @@ def sync_library_to_gsheet(jd_name, spreadsheet_id):
     except Exception as e:
         return False, f"連線失敗：[{type(e).__name__}] {e}"
 
+    s1_rows = [_build_job_row(jd_name)]
     s2_rows, s3_rows, s4_rows = _build_master_rows(jd_name, candidates)
 
-    from hr_schema import S2_PROTECT_ON_UPDATE, S3_PROTECT_ON_UPDATE
+    from hr_schema import S1_PROTECT_ON_UPDATE, S2_PROTECT_ON_UPDATE, S3_PROTECT_ON_UPDATE
 
     errors = []
     for ws_name, rows, key_cols, protect in [
+        ("01_職缺主檔",   s1_rows, [0], S1_PROTECT_ON_UPDATE),   # key: job_id
         ("02_候選人主檔", s2_rows, [0], S2_PROTECT_ON_UPDATE),   # key: candidate_id
         ("03_應徵主檔",   s3_rows, [0], S3_PROTECT_ON_UPDATE),   # key: application_id
         ("04_評分主檔",   s4_rows, [0], None),   # key: score_id
@@ -991,7 +1036,7 @@ def sync_library_to_gsheet(jd_name, spreadsheet_id):
 
     if errors:
         return False, "部分失敗：" + "；".join(errors)
-    return True, f"✅ 已同步「{jd_name}」{len(candidates)} 筆 → 02/03/04 主檔"
+    return True, f"✅ 已同步「{jd_name}」{len(candidates)} 筆 → 01/02/03/04 主檔"
 
 def append_screening_stat(spreadsheet_id, job_name, total_count, pass_count):
     """每次批次初篩完成就append一列到「07_AI初篩統計」，記錄「這批篩了幾份、
