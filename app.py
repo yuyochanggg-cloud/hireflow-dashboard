@@ -1999,6 +1999,36 @@ def extract_candidate_pdf(src_file, candidate_code, pdf_segment_index=None):
     except Exception as e:
         return None, str(e)
 
+def candidates_missing_pdf(candidates):
+    """回傳這批候選人裡「取不到履歷原稿 PDF」的清單：[(候選人dict, 原因), ...]
+
+    2026-08-06 新增。send_recommendation_email 是 `if pdf_bytes:` 才附加、附不到就
+    靜靜跳過，只把數量算進回傳的 attached。所以 PDF 掉了的時候，推薦信照樣寄出、
+    成功訊息顯示「附件 0 份」——那個 0 是唯一線索，還混在一句成功訊息裡，主管會
+    收到一封有評分、沒履歷可看的信。這是這系統反覆出現的「功能沒壞、只是靜靜地
+    少做一件事」模式，所以改成寄出前先擋。
+
+    會發生的實際情境：temp_resumes 被清過（已清過好幾輪）、原始 PDF 被搬走或改名、
+    或候選人是從非 PDF 來源進來的。
+
+    ponytail: 直接呼叫 extract_candidate_pdf 做真實檢查，不另寫一套「檔案存不存在」
+    的輕量預檢——那樣會漏掉「檔案在但找不到這個人的頁段」這種真實失敗。它有
+    @st.cache_data，而且寄出時本來就要呼叫一次，所以不會多花成本。
+    """
+    missing = []
+    for c in candidates:
+        src = str(c.get('來源檔案', '') or '')
+        if not src:
+            missing.append((c, '沒有來源檔案紀錄'))
+            continue
+        pdf_bytes, err = extract_candidate_pdf(
+            src, str(c.get('104代碼', '') or ''),
+            pdf_segment_index=c.get('pdf_segment_index'),
+        )
+        if not pdf_bytes:
+            missing.append((c, err or '在來源 PDF 裡找不到這個人的頁段'))
+    return missing
+
 # FIX #4: parse_pdf — 失敗時回傳 None；layout=True 保留行結構
 def parse_pdf(file_path):
     try:
@@ -4382,13 +4412,35 @@ def _render_results():
                     _email_to = _recipients[_idx]['email']
                     st.caption(f"📧 {_email_to}")
 
+                # ── 寄出前防呆：有人取不到履歷原稿就先擋下來 ─────────────
+                _missing_pdf = candidates_missing_pdf(_sel_candidates)
+                _force_send = True
+                if _missing_pdf:
+                    st.warning(
+                        f"⚠️ 這 {len(_missing_pdf)} 位取不到履歷原稿 PDF，"
+                        f"若直接寄出，主管會收到「有評分但沒有履歷可看」的信：\n"
+                        + "\n".join(
+                            f"　• {c.get('真實姓名', '?')}（{c.get('104代碼', '?')}）—— {why}"
+                            for c, why in _missing_pdf
+                        )
+                    )
+                    st.caption(
+                        "建議：回到上方候選人卡片按「📄 載入原稿」確認狀況，"
+                        "或去 104 後台重新下載該批 PDF 後重新匯入。"
+                    )
+                    _force_send = st.checkbox(
+                        f"我知道這 {len(_missing_pdf)} 位不會有履歷附件，仍要寄出",
+                        key="email_force_send_no_pdf",
+                    )
+
                 _btn_col, _reset_col = st.columns([3, 1])
                 with _reset_col:
                     if st.button("🔄 重置內文", help="還原為自動生成的預設內文"):
                         st.session_state['_email_reset_cnt'] = _reset_cnt + 1
                         st.rerun()
                 with _btn_col:
-                    if st.button("✉️ 寄出推薦信", type="primary", disabled=not _email_to.strip()):
+                    if st.button("✉️ 寄出推薦信", type="primary",
+                                 disabled=(not _email_to.strip()) or not _force_send):
                         with st.spinner("寄信中..."):
                             try:
                                 _attached = send_recommendation_email(
@@ -4419,7 +4471,22 @@ def _render_results():
                                     override_names=[c.get('真實姓名', '?') for c in _override_cands],
                                 )
                                 _backed = backup_recommended_pdfs(_job_name, _sel_candidates)
-                                st.success(f"✅ 已寄出！附件 {_attached} 份｜已備份 {_backed} 份至「推薦備份/{_job_name}/」")
+                                # 附件數少於推薦人數就明講，不要只丟一個數字讓人自己
+                                # 察覺（「附件 0 份」以前混在成功訊息裡很容易被忽略）
+                                if _attached < len(_sel_candidates):
+                                    st.success(
+                                        f"✅ 已寄出給 {_recip_name}｜推薦 {len(_sel_candidates)} 位，"
+                                        f"但只附上 {_attached} 份履歷"
+                                    )
+                                    st.warning(
+                                        f"⚠️ 有 {len(_sel_candidates) - _attached} 位沒有附上履歷原稿，"
+                                        "主管看得到評分但看不到履歷。若需要補寄，請取得 PDF 後重寄一次。"
+                                    )
+                                else:
+                                    st.success(
+                                        f"✅ 已寄出！附件 {_attached} 份｜"
+                                        f"已備份 {_backed} 份至「推薦備份/{_job_name}/」"
+                                    )
 
                                 # 寄信成功 → 逐一將候選人在 03 主檔的流程狀態推進為「已推薦主管」
                                 _status_sid = load_gsheet_id()
