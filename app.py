@@ -536,17 +536,29 @@ def get_library_summary(jd_name):
     except Exception:
         return {'total': 0, 'qualified': 0}
 
-def load_resume_library(jd_name):
-    """載入指定職缺的履歷庫候選人清單"""
+def _library_path(jd_name):
+    """職缺名稱 → 履歷庫檔案路徑（檔名安全化規則的單一來源）。"""
     _safe = re.sub(r'[\\/:*?"<>|]', '_', str(jd_name))
-    fpath = os.path.join(LIBRARY_DIR, f"{_safe}.json")
+    return os.path.join(LIBRARY_DIR, f"{_safe}.json")
+
+def _load_library_payload(jd_name):
+    """讀整份履歷庫 payload（含 jd_name/job_status/summary/candidates），
+    讀不到就回空 dict。要候選人清單用 load_resume_library，要其他欄位用這個。
+    ponytail: 只給新程式碼用，另外 4 處既有的同款路徑拼接留著不動——它們都在
+    正常運作，改寫只有 churn 風險、沒有行為收益。
+    """
+    fpath = _library_path(jd_name)
     if not os.path.exists(fpath):
-        return []
+        return {}
     try:
         with open(fpath, 'r', encoding='utf-8') as f:
-            return json.load(f).get('candidates', [])
+            return json.load(f)
     except Exception:
-        return []
+        return {}
+
+def load_resume_library(jd_name):
+    """載入指定職缺的履歷庫候選人清單"""
+    return _load_library_payload(jd_name).get('candidates', [])
 
 def save_resume_library(jd_name, candidates):
     """儲存指定職缺的完整履歷庫，並更新頂層 summary 供快速讀取。"""
@@ -875,18 +887,55 @@ from hr_schema import GRADE_META as _GRADE_META, GRADE_DEFAULT as _GRADE_DEFAULT
 from hr_schema import SHEET_HEADERS as _SHEET_HEADERS
 from sync_queue import load_pending as _load_pending_sync, add_pending as _add_pending_sync, remove_pending as _remove_pending_sync
 
+
+def resolve_candidate_code(cand):
+    """取出這位候選人「穩定且唯一」的識別碼，所有 CAND-/APP-/SCR- 前綴的 ID 都靠它。
+
+    2026-08-05 事故（P0）：原本各處直接 `f"APP-{code}-{job_safe}"`，104代碼 欄位空白
+    或「未知代碼」時會拼出 `APP--職缺`，不同人撞成同一個 ID。生產資料已經有 8 列
+    共用 3 個 ID——AI短影音企劃專員有 4 位 A/B 級真實候選人被合併成 1 列，HR 在
+    看板上只看到 1 個人。這是 2026-07-15「操作單位改用 application_id」那次修復
+    的延伸缺口：換掉了操作單位，卻沒保證 application_id 自己唯一。
+
+    fallback 依序（每一層都必須跨 session 可重現，否則 upsert 會一直新增列）：
+      1. `104代碼` 欄位——有值就直接用，既有 838 列的 ID 完全不變
+      2. `履歷原文` 全文的 hash——保證同一份履歷永遠得到同一個 ID、不同履歷不撞號
+      3. 姓名／UNKNOWN——連原文都沒有時的最後手段
+
+    刻意不從履歷原文用 regex 反抓「代碼: 12345」：實測那 9 筆的原文是 104 多人份
+    列印預覽合併檔，抓到的是「檔案裡第一個出現的代碼」而不是這個人的——9 筆裡有
+    2 筆抓到同一個代碼、2 筆抓到垃圾值「2」。錯的真代碼比正確的合成 ID 更危險。
+
+    也刻意不用 `履歷原文[:300]` 做 hash（雖然 _render_results 算 cache_key 是那樣
+    寫的）：前 300 字全部是 104 的「履歷使用規範」法律樣板，人人相同，等於所有人
+    hash 到同一個值。一定要用全文。
+    """
+    code = str(cand.get('104代碼', '') or '').strip()
+    if code and code != '未知代碼':
+        return code
+    resume = str(cand.get('履歷原文', '') or '')
+    if resume:
+        return 'H' + hashlib.md5(resume.encode('utf-8')).hexdigest()[:10]
+    name = str(cand.get('真實姓名', '') or '').strip()
+    return name or 'UNKNOWN'
+
+def make_master_ids(cand, jd_name):
+    """回傳 (cand_id, app_id, scr_id, job_safe)。四個 ID 產生點統一走這裡，
+    避免「改一處忘了改另外三處」——這系統已經在行事曆格式、狀態同步上各踩過一次。
+    """
+    code = resolve_candidate_code(cand)
+    job_safe = re.sub(r'[^\w\-]', '_', jd_name)[:20]
+    return f"CAND-{code}", f"APP-{code}-{job_safe}", f"SCR-{code}-{job_safe}", job_safe
+
 def _build_master_rows(jd_name, candidates):
     """將一個職缺的候選人清單轉成三張主檔的 rows。"""
     today = time.strftime('%Y-%m-%d')
     s2_rows, s3_rows, s4_rows = [], [], []
 
     for c in candidates:
-        code     = str(c.get('104代碼', '') or '')
+        code     = resolve_candidate_code(c)
         name     = str(c.get('真實姓名', '') or '')
-        cand_id  = f"CAND-{code}" if code else f"CAND-{name[:4]}"
-        job_safe = re.sub(r'[^\w\-]', '_', jd_name)[:20]
-        app_id   = f"APP-{code}-{job_safe}"
-        scr_id   = f"SCR-{code}-{job_safe}"
+        cand_id, app_id, scr_id, job_safe = make_master_ids(c, jd_name)
 
         # 02_候選人主檔 — key: candidate_id（col 0）
         s2_rows.append([
@@ -972,15 +1021,7 @@ def _build_job_row(jd_name):
         for d in dims
     )
 
-    job_status = 'active'
-    _safe_file = re.sub(r'[\\/:*?"<>|]', '_', str(jd_name))
-    _fpath = os.path.join(LIBRARY_DIR, f"{_safe_file}.json")
-    if os.path.exists(_fpath):
-        try:
-            with open(_fpath, 'r', encoding='utf-8') as f:
-                job_status = json.load(f).get('job_status', 'active')
-        except Exception:
-            pass
+    job_status = _load_library_payload(jd_name).get('job_status', 'active')
 
     return [
         job_safe, jd_name, '',                      # job_id, 職缺名稱, 部門（無資料來源）
@@ -1076,11 +1117,8 @@ def update_application_status_gsheet(spreadsheet_id, job_name, candidate, new_st
     except Exception as e:
         return False, f"連線失敗：[{type(e).__name__}] {e}"
 
-    code     = str(candidate.get('104代碼', '') or '')
     name     = str(candidate.get('真實姓名', '') or '')
-    cand_id  = f"CAND-{code}" if code else f"CAND-{name[:4]}"
-    job_safe = re.sub(r'[^\w\-]', '_', job_name)[:20]
-    app_id   = f"APP-{code}-{job_safe}"
+    cand_id, app_id, _scr_id, job_safe = make_master_ids(candidate, job_name)
 
     try:
         existing = ws.get_all_values()
@@ -1123,12 +1161,10 @@ def update_application_statuses_batch(spreadsheet_id, job_name, candidates, new_
     status_col_letter = re.sub(r'\d+$', '', status_col_letter)  # 只要欄字母（如 "Q"）
     row_by_appid = {row[0]: i for i, row in enumerate(existing[1:], start=2) if row}
 
-    job_safe = re.sub(r'[^\w\-]', '_', job_name)[:20]
     ok_pairs, fail_pairs, updates = [], [], []
     for c in candidates:
-        code = str(c.get('104代碼', '') or '')
         name = str(c.get('真實姓名', '') or '')
-        app_id = f"APP-{code}-{job_safe}"
+        _cand_id, app_id, _scr_id, _js = make_master_ids(c, job_name)
         row_i = row_by_appid.get(app_id)
         if row_i is None:
             fail_pairs.append((c, f"找不到（{app_id}）對應的應徵紀錄，請先同步一次"))
@@ -1162,10 +1198,14 @@ def mark_audit_override(job_name, candidates):
             records = json.load(f)
     except Exception:
         return
-    targets = {str(c.get('104代碼', '')) for c in candidates}
+    # 用 resolve_candidate_code 而不是直接讀「104代碼」欄位：欄位可能是空白或
+    # 「未知代碼」，同一職缺有兩位這種人時會把沒被覆蓋的人也一起標成通過，
+    # 反而污染這個功能本來要修正的差別影響稽核（2026-08-05 P1）。
+    targets = {resolve_candidate_code(c) for c in candidates}
+    targets.discard('UNKNOWN')
     changed = False
     for r in records:
-        if r.get("職缺") == job_name and str(r.get("104代碼", "")) in targets:
+        if r.get("職缺") == job_name and resolve_candidate_code(r) in targets:
             r["hr_override"] = True
             changed = True
     if changed:
@@ -1205,23 +1245,25 @@ def mark_hr_override_batch(spreadsheet_id, job_name, candidates):
     note_idx = header.index("備註")
     row_by_appid = {row[0]: i for i, row in enumerate(existing[1:], start=2) if row}
 
-    job_safe  = re.sub(r'[^\w\-]', '_', job_name)[:20]
     today_str = time.strftime('%Y-%m-%d')
+    _OVERRIDE_TAG = "HR人工覆核通過"
     ok_pairs, fail_pairs, updates = [], [], []
     for c in candidates:
-        code = str(c.get('104代碼', '') or '')
         name = str(c.get('真實姓名', '') or '')
-        app_id = f"APP-{code}-{job_safe}"
+        _cand_id, app_id, _scr_id, _js = make_master_ids(c, job_name)
         row_i = row_by_appid.get(app_id)
         if row_i is None:
             fail_pairs.append((c, f"找不到（{app_id}）對應的應徵紀錄，請先同步一次"))
             continue
         old_row  = existing[row_i - 1]
         old_note = old_row[note_idx] if len(old_row) > note_idx else ""
-        reason   = c.get('判定理由', '') or '（無記錄）'
-        new_note = f"{old_note}｜HR人工覆核通過（AI原判不合格：{reason}）{today_str}".strip("｜")
         updates.append({"range": f"{hr_col_letter}{row_i}", "values": [["人工覆核通過"]]})
-        updates.append({"range": f"{note_col_letter}{row_i}", "values": [[new_note]]})
+        # 同一人重寄第二次推薦信時不要再疊一段一樣的備註（備註受
+        # S3_PROTECT_ON_UPDATE 保護不會被批次同步清掉，所以會一直累積下去）。
+        if _OVERRIDE_TAG not in old_note:
+            reason = c.get('判定理由', '') or '（無記錄）'
+            new_note = f"{old_note}｜{_OVERRIDE_TAG}（AI原判不合格：{reason}）{today_str}".strip("｜")
+            updates.append({"range": f"{note_col_letter}{row_i}", "values": [[new_note]]})
         ok_pairs.append((c, name))
 
     if updates:
@@ -1874,6 +1916,9 @@ def render_pdf_viewer(pdf_bytes: bytes, div_id: str) -> None:
     預覽體驗，不用各自兜一份——原本精簡卡那邊只有下載按鈕沒有預覽，是疏漏
     不是刻意設計（Opus 2026-07-27 架構判斷）。
     """
+    # div_id 會直接進 HTML 屬性與 <script>，而它的來源是 PDF 抽出的 104代碼——
+    # 實務上是純數字，但抽取失敗時可能夾帶奇怪字元，只留英數與底線最省事。
+    div_id = re.sub(r'\W', '_', str(div_id))
     total_pages = get_pdf_page_count(pdf_bytes)
     imgs_b64 = []
     for p in range(total_pages):

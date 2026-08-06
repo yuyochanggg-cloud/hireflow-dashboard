@@ -408,7 +408,39 @@ from hr_schema import (
     RESULT_MAP as _RESULT_MAP,
     STATUS_MAP as _STATUS_MAP,
     CLOSE_REASONS, CLOSE_REASON_TO_INTERVIEW_NOTE,
+    S3_COLS, SHEET_HEADERS,
 )
+
+# ── 寫入前的兩道防護（2026-08-05 新增）────────────────────────────
+def _safe_headers(target, schema_cols):
+    """從快取列取回欄位順序，並確認它沒有被重複／空白欄名塌掉。
+    _load_all_sheets 用 dict(zip(headers, padded)) 建每一列，表頭若出現重複或
+    空白欄名，dict 會把它們併成同一個 key，headers 就整體變短，之後
+    headers.index(欄名)+1 算出的欄號會左移，update_cell 靜靜寫到錯的欄位——
+    而且是全表系統性寫錯，不是偶發一列。長度對不上就拒絕寫入。
+    """
+    headers = [k for k in target.keys() if k != "_row"]
+    if len(headers) != len(schema_cols):
+        st.error(
+            f"試算表表頭異常：讀到 {len(headers)} 欄，應該有 {len(schema_cols)} 欄。"
+            "可能是第 1 列有重複或空白的欄位名稱。為避免把資料寫到錯的欄位已中止，"
+            "請先檢查試算表第 1 列。"
+        )
+        return None
+    return headers
+
+def _row_still_matches(ws, row_num, expected_id):
+    """寫入前確認那一列真的還是那個人（A 欄是三張主檔共同的 key 欄）。
+    _row 來自 60 秒 TTL 的快取。如果這段時間內有人直接在 Sheets 手動刪列／插列，
+    列號會整體位移，寫入就會打到別人身上——2026-08-05 實際發生過：翁志魁被寫成
+    「錄取審核」，但他根本還沒面試。多花 1 次單格讀取換掉這個風險。
+    """
+    try:
+        return ws.acell(f"A{row_num}").value == expected_id
+    except Exception:
+        # 讀不到通常是配額／網路問題，此時接下來的寫入也會失敗並顯示錯誤，
+        # 不需要在這裡多攔一層（維持原本行為，不製造新的死路）。
+        return True
 
 # ── Sheets reader ─────────────────────────────────────────────
 def _sheet_to_dicts(sh, name: str) -> list:
@@ -772,12 +804,19 @@ def update_stage(app_id: str, new_stage: str, close_reason: str = "") -> bool:
             return False
         row_num = target["_row"]
         # dict keys 保留欄位順序（Python 3.7+），排除 _row 後即為原始 headers
-        headers = [k for k in target.keys() if k != "_row"]
+        headers = _safe_headers(target, S3_COLS)
+        if headers is None:
+            return False
         if "流程狀態" not in headers:
             st.error("試算表缺少「流程狀態」欄位")
             return False
         flow_col = headers.index("流程狀態") + 1  # gspread 1-indexed
         ws = sh.worksheet("03_應徵主檔")
+        if not _row_still_matches(ws, row_num, app_id):
+            _invalidate()
+            st.error("資料已變動（試算表的列可能被手動增刪過），為避免改到別人的紀錄已中止。"
+                     "請重新整理頁面後再試一次。")
+            return False
         # 結案時把「原本卡在哪個階段」記下來，流程狀態一旦變成「已結案」就再
         # 也看不出來走到哪一步了——這欄供之後的漏斗轉換率計算用。
         old_stage = FLOW_TO_STAGE.get(target.get("流程狀態", ""), "screening")
@@ -833,8 +872,10 @@ def _sync_interview_pass_if_pending(app_id: str, candidate_id: str) -> None:
         if not target_iv or "_row" not in target_iv:
             return
         if str(target_iv.get("面試結果", "")).strip() in ("", "待定"):
-            headers = [k for k in target_iv.keys() if k != "_row"]
-            if "面試結果" in headers:
+            headers = _safe_headers(target_iv, SHEET_HEADERS["05_面試主檔"])
+            if headers and "面試結果" in headers:
+                if not _row_still_matches(ws, target_iv["_row"], target_iv.get("interview_id", "")):
+                    return
                 col = headers.index("面試結果") + 1
                 ws.update_cell(target_iv["_row"], col, "通過")
     except Exception:
@@ -858,7 +899,10 @@ def _sync_interview_fail_on_close(app_id: str, candidate_id: str, job_id: str,
             target_iv = next((iv for iv in cached_ivs if iv.get("candidate_id") == candidate_id), None)
         if target_iv and "_row" in target_iv:
             ws = sh.worksheet("05_面試主檔")
-            headers = [k for k in target_iv.keys() if k != "_row"]
+            headers = _safe_headers(target_iv, SHEET_HEADERS["05_面試主檔"])
+            if not headers or not _row_still_matches(
+                    ws, target_iv["_row"], target_iv.get("interview_id", "")):
+                return
             if "面試結果" in headers:
                 ws.update_cell(target_iv["_row"], headers.index("面試結果") + 1, "未通過")
             if "面試官備註" in headers:
@@ -905,12 +949,19 @@ def update_note(app_id: str, note: str) -> bool:
             st.error("找不到應徵紀錄，請重新整理後再試")
             return False
         row_num = target["_row"]
-        headers = [k for k in target.keys() if k != "_row"]
+        headers = _safe_headers(target, S3_COLS)
+        if headers is None:
+            return False
         if "備註" not in headers:
             st.error("試算表缺少「備註」欄位")
             return False
         note_col = headers.index("備註") + 1  # gspread 1-indexed
         ws = sh.worksheet("03_應徵主檔")
+        if not _row_still_matches(ws, row_num, app_id):
+            _invalidate()
+            st.error("資料已變動（試算表的列可能被手動增刪過），為避免改到別人的紀錄已中止。"
+                     "請重新整理頁面後再試一次。")
+            return False
         ws.update_cell(row_num, note_col, note)
         _invalidate()
         return True
@@ -2422,14 +2473,17 @@ def page_analytics():
     ]
     funnel_labels = [label for label, _ in _FUNNEL_STEPS]
     funnel_counts = [sum(1 for c in cands_f if fn(c)) for _, fn in _FUNNEL_STEPS]
+    # 用名字取數字，不要用 funnel_counts[4] 這種魔術索引——_FUNNEL_STEPS 插一個
+    # 階段，所有索引就靜默指到錯的指標（跟這系統踩過好幾次的欄位錯位同一種脆弱）。
+    _fc = dict(zip(funnel_labels, funnel_counts))
 
     # ── 指標行 ────────────────────────────────────────────────
     st.markdown("---")
     am1, am2, am3, am4 = st.columns(4)
-    am1.metric("新進候選人", funnel_counts[0])
-    am2.metric("進行面試",   funnel_counts[4])
-    am3.metric("面試通過",   funnel_counts[5])
-    am4.metric("報到",       funnel_counts[6])
+    am1.metric("新進候選人", _fc["新進候選人"])
+    am2.metric("進行面試",   _fc["進行面試"])
+    am3.metric("面試通過",   _fc["面試通過"])
+    am4.metric("報到",       _fc["報到"])
     st.markdown("---")
 
     ch1, ch2 = st.columns(2)
@@ -2451,8 +2505,11 @@ def page_analytics():
         # AI判不合格、HR仍手動從淘汰名單拉上來推薦的比例。這個比例偏高，
         # 代表AI評分Prompt或維度設計可能有問題（太嚴苛/抓錯重點），值得回頭
         # 檢視，不是候選人本身的問題（使用者2026-07-28提出的用途）。
-        _hr_recommend_n = funnel_counts[2]  # HR推薦
         _override_n = sum(1 for c in cands_f if c.get("hr_override"))
+        # 分母要把覆核者本人也算進去：他若之後被結案且「結案前階段」空白，
+        # _ever_reached 會退回 screening、從「HR推薦」這格消失，但分子仍算他，
+        # 比率就會超過100%。取兩者的聯集當分母，數學上永遠 <=100%。
+        _hr_recommend_n = max(_fc["HR推薦"], _override_n)
         if _hr_recommend_n:
             _override_rate = _override_n / _hr_recommend_n * 100
             _rate_msg = f"🔼 人工覆核率：{_override_n}/{_hr_recommend_n}（{_override_rate:.0f}%）"

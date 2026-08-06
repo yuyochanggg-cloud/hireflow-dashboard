@@ -120,6 +120,54 @@ def test_master_rows寬度與schema一致():
     assert len(s4[0]) == len(S4_COLS)
 
 
+def test_job_row寬度與S1一致():
+    # 2026-08-04 新增 01_職缺主檔同步時，S1 沒有像 S2/S3/S4 一樣被寬度測試守住，
+    # 正是 2026-07-27「S3 少一欄」事故的同一個缺口。
+    row = app._build_job_row("職缺A")
+    assert len(row) == len(hr_schema.S1_COLS), "01_職缺主檔 row 寬度跟 S1_COLS 對不上"
+    assert hr_schema.S1_COLS[0] == "job_id"
+    missing = set(hr_schema.S1_PROTECT_ON_UPDATE) - set(hr_schema.S1_COLS)
+    assert not missing, f"這些保護欄不在 S1_COLS，保護會靜默失效：{missing}"
+
+
+# ── 3.5 識別碼唯一性（守 2026-08-05 的 APP-- 撞號事故）──────────────
+
+def test_無104代碼時app_id不會互相撞號():
+    """生產資料曾出現 8 列共用 3 個 application_id（AI短影音企劃專員有 4 位真實
+    A/B 級候選人被合併成 1 列）。104代碼 空白時必須還能產生互不相同的 ID。"""
+    a = {"104代碼": "", "真實姓名": "", "履歷原文": "甲的履歷內容" * 30}
+    b = {"104代碼": None, "真實姓名": None, "履歷原文": "乙的履歷內容" * 30}
+    _, app_a, _, _ = app.make_master_ids(a, "職缺A")
+    _, app_b, _, _ = app.make_master_ids(b, "職缺A")
+    assert app_a != app_b, "兩個無代碼候選人拼出同一個 application_id"
+    assert app_a != "APP--職缺A" and "APP--" not in app_a
+
+
+def test_無代碼者的ID不能被104樣板文字綁在一起():
+    """104 履歷的前 300 字是「履歷使用規範」法律樣板、人人相同。若拿前 300 字做
+    hash（_render_results 算 cache_key 就是那樣寫的），所有無代碼者會 hash 到同一
+    個值、再次全部撞號。這條守住「必須用全文」。"""
+    boiler = "EcLife良興_良興股份有限公司從事徵才目的使用。履歷使用規範" * 12  # >300字
+    a = {"104代碼": None, "履歷原文": boiler + "甲的工作經歷"}
+    b = {"104代碼": None, "履歷原文": boiler + "乙的工作經歷"}
+    assert app.resolve_candidate_code(a) != app.resolve_candidate_code(b)
+
+
+def test_同一份履歷每次都得到同一個ID():
+    # 不可重現的 ID（例如摻進時間戳）會讓 upsert 每次同步都新增一列
+    cand = {"104代碼": "", "履歷原文": "某人的履歷全文" * 20}
+    assert app.resolve_candidate_code(cand) == app.resolve_candidate_code(dict(cand))
+
+
+def test_有104代碼時ID完全不變():
+    # 這是遷移安全的關鍵：既有 838 列的 ID 一個都不能變，否則同步會全部變成新增列
+    cand = {"104代碼": "1872572026871", "真實姓名": "翁志魁"}
+    cand_id, app_id, scr_id, job_safe = app.make_master_ids(cand, "視覺設計師")
+    assert cand_id == "CAND-1872572026871"
+    assert app_id == "APP-1872572026871-視覺設計師"
+    assert scr_id == "SCR-1872572026871-視覺設計師"
+
+
 # ── 4. 評分與解析（守 LLM 輸出不可信原則）──────────────────────────
 
 def test_加權評分_C級同步標記不合格():
