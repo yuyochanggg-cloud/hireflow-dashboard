@@ -397,22 +397,42 @@ def send_report_email(report):
         print('（--email 已指定，但 email_config.json 沒有 sender_email/app_password，跳過寄信）')
         return
     smtp_server = config.get('smtp_server', 'smtp.gmail.com')
-    smtp_port = int(config.get('smtp_port', 465))
+
+    # 2026-08-07 實測：這個網路環境 **只有 465 通，587 和 25 都被擋**（連線逾時）。
+    # email_config.json 裡寫的是 587，而 app.py 的 send_recommendation_email 之所以
+    # 一直能正常寄推薦信，是因為它寫死 465、根本沒讀 config 的 port——同一件事兩條
+    # 路徑做法不一致，而剛好正確的那條是靠寫死。這裡對齊那條已驗證可行的做法：
+    # 465 SSL 優先，config 的值只當備援，避免又被一個錯的設定值擋掉整條通知路徑。
+    ports = [465]
+    cfg_port = int(config.get('smtp_port', 465))
+    if cfg_port != 465:
+        ports.append(cfg_port)
 
     msg = MIMEText(report, 'plain', 'utf-8')
     msg['From'] = sender
     msg['To'] = ADMIN_EMAIL
     msg['Subject'] = "【HireFlow 每日健檢】發現問題"
 
-    try:
-        with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
-            server.login(sender, password)
-            server.send_message(msg)
-    except Exception:
-        with smtplib.SMTP(smtp_server, 587) as server:
-            server.starttls()
-            server.login(sender, password)
-            server.send_message(msg)
+    last_err = None
+    for port in ports:
+        try:
+            if port == 465:
+                with smtplib.SMTP_SSL(smtp_server, port, timeout=30) as server:
+                    server.login(sender, password)
+                    server.send_message(msg)
+            else:
+                with smtplib.SMTP(smtp_server, port, timeout=30) as server:
+                    server.starttls()
+                    server.login(sender, password)
+                    server.send_message(msg)
+            break
+        except Exception as e:
+            last_err = e
+            continue
+    else:
+        # 全部 port 都失敗：明講出來，不要靜靜地什麼都沒發生
+        print(f'（⚠️ 健檢報告寄送失敗，所有 SMTP port 都不通：{type(last_err).__name__}: {last_err}）')
+        return
     print(f"（已寄出健檢報告給：{ADMIN_EMAIL}）")
 
 
