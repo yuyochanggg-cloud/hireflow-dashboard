@@ -29,6 +29,33 @@ from hr_schema import S3_COLS, FLOW_TO_STAGE
 ADMIN_EMAIL = 'yunyu@ls3c.com.tw'
 
 
+# 已知並「決定不處理」的例外。這裡的每一筆都會照樣出現在報告底部（所以健檢是不是
+# 還活著、隨時看得出來——如果哪天連這幾行都消失了，代表健檢本身壞了，不是資料變乾淨
+# 了），但**不會觸發寄信**。
+#
+# 為什麼要這個機制：每天寄一封提醒同一筆已知舊資料的信，會養成「這封信不用看」的
+# 習慣，真正的新問題就會跟著被忽略。狼來了一次，這個健檢就等於沒做。
+#
+# key 是會出現在報告明細行裡的字串（用 in 比對，所以要夠具體）；value 是為什麼放行。
+# 資料修好之後這一筆會比對不到任何東西，留著無害，但可以順手刪掉。
+KNOWN_EXCEPTIONS = {
+    '王美嵐': (
+        '職缺欄位卡著「➕ 新增自訂職缺」佔位字串。履歷庫查無任何佐證，判斷不出她原本'
+        '應徵哪個職缺；依 2026-08-03 定的原則「沒有客觀佐證就不刪、不猜」保留原狀。'
+        '同時刻意留作健檢的活體樣本（金絲雀）——它消失了就代表健檢自己壞了。'
+    ),
+}
+
+
+def _split_known(lines):
+    """把一項檢查的明細行分成 (新問題, 已知例外)。"""
+    new_lines, known_lines = [], []
+    for line in lines:
+        hit = next((k for k in KNOWN_EXCEPTIONS if k in line), None)
+        (known_lines if hit else new_lines).append(line)
+    return new_lines, known_lines
+
+
 class Issue:
     """一項檢查發現的問題：no=檢查編號, title=標題, lines=逐筆明細, why=意義, advice=建議"""
     def __init__(self, no, title, lines, why, advice):
@@ -290,18 +317,31 @@ def check_9_library_vs_sheet(s3_values):
     )
 
 
-def format_report(issues, total_rows):
-    if not issues:
-        return f"✅ 今日健檢通過（檢查 9 項 / {total_rows} 筆應徵紀錄）"
+def format_report(issues, known, total_rows):
     out = []
-    for issue in issues:
-        out.append(f"⚠️ [{issue.no}/9] {issue.title} —— {len(issue.lines)} 項" if len(issue.lines) != 1
-                    else f"⚠️ [{issue.no}/9] {issue.title}")
-        for line in issue.lines:
-            out.append(f"   {line}")
-        out.append(f"   → 意義：{issue.why}")
-        out.append(f"   → 建議：{issue.advice}")
+    if issues:
+        for issue in issues:
+            out.append(f"⚠️ [{issue.no}/9] {issue.title} —— {len(issue.lines)} 項" if len(issue.lines) != 1
+                        else f"⚠️ [{issue.no}/9] {issue.title}")
+            for line in issue.lines:
+                out.append(f"   {line}")
+            out.append(f"   → 意義：{issue.why}")
+            out.append(f"   → 建議：{issue.advice}")
+            out.append("")
+    else:
+        out.append(f"✅ 今日健檢通過（檢查 9 項 / {total_rows} 筆應徵紀錄）")
         out.append("")
+
+    if known:
+        out.append("── 已知例外（決定不處理，不觸發通知）───────────────")
+        for issue, lines in known:
+            for line in lines:
+                out.append(f"   [{issue.no}/9] {line}")
+        out.append("")
+        for k, why in KNOWN_EXCEPTIONS.items():
+            out.append(f"   ※ {k}：{why}")
+        out.append("")
+        out.append("   （這幾行是健檢的活體樣本：它們消失代表健檢自己壞了，不是資料變乾淨了）")
     return '\n'.join(out).rstrip()
 
 
@@ -323,8 +363,18 @@ def run_checks():
         check_8_batch_date(s3_values),
         check_9_library_vs_sheet(s3_values),
     ]
-    issues = [c for c in checks if c is not None]
-    return issues, total_rows
+    # 把已知例外從「新問題」裡分出來：新問題才會寄信，已知例外只列在報告底部
+    issues, known = [], []
+    for c in checks:
+        if c is None:
+            continue
+        new_lines, known_lines = _split_known(c.lines)
+        if known_lines:
+            known.append((c, known_lines))
+        if new_lines:
+            c.lines = new_lines
+            issues.append(c)
+    return issues, known, total_rows
 
 
 def load_email_config():
@@ -375,10 +425,11 @@ def main():
     ap.add_argument('--email', action='store_true', help='有問題時寄報告給自己')
     args = ap.parse_args()
 
-    issues, total_rows = run_checks()
-    report = format_report(issues, total_rows)
+    issues, known, total_rows = run_checks()
+    report = format_report(issues, known, total_rows)
     print(report)
 
+    # 只有「新問題」才寄信；只剩已知例外時不寄（否則每天一封會被養成忽略的習慣）
     if args.email and issues:
         send_report_email(report)
 
