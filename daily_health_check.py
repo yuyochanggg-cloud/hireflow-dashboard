@@ -14,6 +14,7 @@ import glob
 import json
 import os
 import smtplib
+import sys
 from collections import Counter
 from email.mime.text import MIMEText
 
@@ -421,13 +422,30 @@ def main():
     # cwd 是專案根目錄——固定 cwd 到本檔案所在目錄，不管從哪裡被呼叫都能跑。
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
+    # Windows 工作排程器的 stdout 預設是 cp950（繁體中文），印 ✅ ⚠️ 這類字元會
+    # UnicodeEncodeError。2026-08-07 真實事故：排程 08:35 有跑但 exit 1，因為
+    # print(report) 先炸掉、根本沒走到 send_report_email 那行，使用者既沒收到通知
+    # 也看不到任何錯誤——健檢等於整個靜默失效。
+    # 手動測試時因為指令裡有 PYTHONIOENCODING=utf-8 而完全測不出來，所以這種
+    # 「只在排程環境才會發生」的問題，一定要用排程完全相同的指令重現過才算驗證。
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
     ap = argparse.ArgumentParser()
     ap.add_argument('--email', action='store_true', help='有問題時寄報告給自己')
     args = ap.parse_args()
 
     issues, known, total_rows = run_checks()
     report = format_report(issues, known, total_rows)
-    print(report)
+    # 上面已經把 stdout 轉成 utf-8，理論上不會再炸；這層是保險——「印不出來」是
+    # 顯示問題，絕不該讓它擋掉真正重要的通知（這正是 08-07 事故的形狀）。
+    try:
+        print(report)
+    except Exception:
+        print(report.encode('ascii', 'replace').decode('ascii'))
 
     # 只有「新問題」才寄信；只剩已知例外時不寄（否則每天一封會被養成忽略的習慣）
     if args.email and issues:
