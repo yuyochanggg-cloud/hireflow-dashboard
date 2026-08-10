@@ -200,3 +200,58 @@ def test_個資遮蔽():
     assert "test@example.com" not in masked
     assert "0912" not in masked
     assert "35歲" not in masked
+
+
+# ── 5. 健檢護欄（守 2026-08-06 遷移腳本用 today 蓋掉歷史日期的坑）──────
+
+def _hc_rows(s3_pairs, s2_pairs):
+    """組出 check_10 需要的 (03, 02) 兩張表最小資料。"""
+    h3 = list(S3_COLS)
+    h2 = ['candidate_id', '真實姓名', '104代碼', 'Email', '電話（遮蔽）', '居住地',
+          '最近應徵職缺', '初次進庫日期', '最後更新日期', '來源檔案', '備註']
+    t3 = [h3]
+    for cid, batch in s3_pairs:
+        r = [''] * len(h3)
+        r[h3.index('candidate_id')] = cid
+        r[h3.index('應徵批次日期')] = batch
+        t3.append(r)
+    t2 = [h2]
+    for cid, first in s2_pairs:
+        r = [''] * len(h2)
+        r[0] = cid
+        r[h2.index('初次進庫日期')] = first
+        t2.append(r)
+    return t3, t2
+
+
+def test_健檢抓得到初次進庫日期被蓋成執行當天():
+    # 2026-08-06 撞號修復腳本替 11 人新開 02 列時把初次進庫寫成執行當天，
+    # 導致 6/7 月的人被算進 8 月的新進候選人。這條護欄就是為了讓下次當天就發現。
+    import daily_health_check as hc
+    t3, t2 = _hc_rows([('CAND-Ha', '2026-06-24')], [('CAND-Ha', '2026-08-06')])
+    issue = hc.check_10_first_entry_date(t3, t2)
+    assert issue is not None, "初次進庫晚於應徵日期必須被抓到"
+    assert '2026-06-24' in issue.lines[0]
+
+
+def test_健檢不誤報進庫早於應徵的正常情形():
+    # 人才庫舊人之後才投新職缺是正常的；會誤報的健檢等於沒有健檢
+    import daily_health_check as hc
+    t3, t2 = _hc_rows([('CAND-X', '2026-07-01')], [('CAND-X', '2026-05-01')])
+    assert hc.check_10_first_entry_date(t3, t2) is None
+    # 同日、空值、短列都不能報也不能炸
+    t3, t2 = _hc_rows([('CAND-Y', '2026-08-10')], [('CAND-Y', '2026-08-10')])
+    assert hc.check_10_first_entry_date(t3, t2) is None
+    t3, t2 = _hc_rows([('CAND-W', '')], [('CAND-W', '2026-08-06')])
+    assert hc.check_10_first_entry_date(t3, t2) is None
+    assert hc.check_10_first_entry_date([list(S3_COLS), ['CAND-S']],
+                                        [['candidate_id'], ['CAND-S']]) is None
+
+
+def test_健檢報告編號總數與檢查數一致():
+    # 以前 [n/9] 寫死在四處，加檢查時漏改就會出現「[10/9]」
+    import daily_health_check as hc
+    import inspect
+    n = len([x for x in dir(hc) if x.startswith('check_') and callable(getattr(hc, x))])
+    assert hc.TOTAL_CHECKS == n, f"TOTAL_CHECKS={hc.TOTAL_CHECKS} 但實際有 {n} 個 check_ 函式"
+    assert 'TOTAL_CHECKS' in inspect.getsource(hc.format_report), "報告編號必須讀 TOTAL_CHECKS"

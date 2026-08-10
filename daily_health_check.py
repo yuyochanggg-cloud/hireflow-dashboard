@@ -30,6 +30,10 @@ from hr_schema import S3_COLS, FLOW_TO_STAGE
 # 混用會把內部資料健檢報告寄給不相關的外部收件人。
 ADMIN_EMAIL = 'yunyu@ls3c.com.tw'
 
+# 檢查項總數。報告裡的 [n/N] 與「檢查 N 項」都讀這個值——以前寫死 9，加檢查時
+# 很容易漏改其中一處，變成「[10/9]」這種對不上的編號。
+TOTAL_CHECKS = 10
+
 
 # 已知並「決定不處理」的例外。這裡的每一筆都會照樣出現在報告底部（所以健檢是不是
 # 還活著、隨時看得出來——如果哪天連這幾行都消失了，代表健檢本身壞了，不是資料變乾淨
@@ -319,26 +323,80 @@ def check_9_library_vs_sheet(s3_values):
     )
 
 
+def check_10_first_entry_date(s3_values, s2_values):
+    """初次進庫日期不得晚於該人最早的應徵批次日期。
+
+    2026-08-10 加入。成因：2026-08-06 的撞號修復腳本替 11 位候選人在 02_候選人主檔
+    新開列，初次進庫日期直接寫成「執行當天」而不是真正的應徵日期，結果六、七月的
+    10 個人被算進八月的「新進候選人」，來源圓餅圖也憑空多出 10 個「未指定」。
+
+    這是遷移腳本的通用失敗形狀（用 today 覆蓋歷史日期），跟 check_8 是同一類但不同
+    層：check_8 看 03 的應徵批次日期被覆寫，這裡看 02 的初次進庫日期被覆寫。
+    分析報表的區間篩選走的是 02 這一欄，所以它錯了整份報表就錯。
+
+    反方向（進庫早於應徵）是正常的：人才庫裡的舊人之後才投新職缺。
+    """
+    h3 = s3_values[0] if s3_values else []
+    h2 = s2_values[0] if s2_values else []
+    c_cid, c_batch, c_name = _idx(h3, 'candidate_id'), _idx(h3, '應徵批次日期'), _idx(h3, '姓名')
+    # 02 的欄位不能用 _idx()——它找不到時會退回 S3_COLS 的順序（另一張表的 schema），
+    # 用在 02 上會拿到毫無關係的欄號、甚至直接 ValueError 讓整份健檢掛掉。
+    # 02 表頭壞掉是 check_1 之外的另一回事，這裡查不到欄位就安靜跳過這項檢查。
+    if 'candidate_id' not in h2 or '初次進庫日期' not in h2:
+        return None
+    k_cid, k_first = h2.index('candidate_id'), h2.index('初次進庫日期')
+
+    earliest, names = {}, {}
+    for row in s3_values[1:]:
+        cid = row[c_cid] if len(row) > c_cid else ''
+        batch = (row[c_batch] if len(row) > c_batch else '').strip()
+        if not cid or not batch:
+            continue
+        if cid not in earliest or batch < earliest[cid]:
+            earliest[cid] = batch
+        names.setdefault(cid, (row[c_name] if len(row) > c_name else '') or '(無姓名)')
+
+    lines = []
+    for n, row in enumerate(s2_values[1:], start=2):
+        cid = row[k_cid] if len(row) > k_cid else ''
+        cur = (row[k_first] if len(row) > k_first else '').strip()
+        want = earliest.get(cid)
+        if not cid or not cur or not want:
+            continue
+        if cur[:10] > want[:10]:
+            lines.append(f"02 第{n}列 {names.get(cid, '')}（{cid}）："
+                         f"初次進庫 {cur} 晚於最早應徵 {want}")
+    if not lines:
+        return None
+    return Issue(
+        10, f"初次進庫日期晚於應徵日期 —— {len(lines)} 筆", lines,
+        "分析報表的統計區間是用「初次進庫日期」篩的，這一欄被蓋成執行當天的話，"
+        "舊月份的人會被算進當月，新進候選人數、來源分布、漏斗全部失真。",
+        "跑 scripts/fix_first_entry_date_after_migration.py --dry-run 確認後修正；"
+        "並回頭檢查最近執行過的遷移腳本，是否在新增 02 列時用了 today 而非真實應徵日期。",
+    )
+
+
 def format_report(issues, known, total_rows):
     out = []
     if issues:
         for issue in issues:
-            out.append(f"⚠️ [{issue.no}/9] {issue.title} —— {len(issue.lines)} 項" if len(issue.lines) != 1
-                        else f"⚠️ [{issue.no}/9] {issue.title}")
+            out.append(f"⚠️ [{issue.no}/{TOTAL_CHECKS}] {issue.title} —— {len(issue.lines)} 項" if len(issue.lines) != 1
+                        else f"⚠️ [{issue.no}/{TOTAL_CHECKS}] {issue.title}")
             for line in issue.lines:
                 out.append(f"   {line}")
             out.append(f"   → 意義：{issue.why}")
             out.append(f"   → 建議：{issue.advice}")
             out.append("")
     else:
-        out.append(f"✅ 今日健檢通過（檢查 9 項 / {total_rows} 筆應徵紀錄）")
+        out.append(f"✅ 今日健檢通過（檢查 {TOTAL_CHECKS} 項 / {total_rows} 筆應徵紀錄）")
         out.append("")
 
     if known:
         out.append("── 已知例外（決定不處理，不觸發通知）───────────────")
         for issue, lines in known:
             for line in lines:
-                out.append(f"   [{issue.no}/9] {line}")
+                out.append(f"   [{issue.no}/{TOTAL_CHECKS}] {line}")
         out.append("")
         for k, why in KNOWN_EXCEPTIONS.items():
             out.append(f"   ※ {k}：{why}")
@@ -352,6 +410,7 @@ def run_checks():
     s3_values = sh.worksheet('03_應徵主檔').get_all_values()
     s1_values = sh.worksheet('01_職缺主檔').get_all_values()
     s5_values = sh.worksheet('05_面試主檔').get_all_values()
+    s2_values = sh.worksheet('02_候選人主檔').get_all_values()
     total_rows = max(0, len(s3_values) - 1)
 
     checks = [
@@ -364,6 +423,7 @@ def run_checks():
         check_7_missing_interview(s3_values, s5_values),
         check_8_batch_date(s3_values),
         check_9_library_vs_sheet(s3_values),
+        check_10_first_entry_date(s3_values, s2_values),
     ]
     # 把已知例外從「新問題」裡分出來：新問題才會寄信，已知例外只列在報告底部
     issues, known = [], []
