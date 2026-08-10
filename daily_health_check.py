@@ -15,6 +15,7 @@ import json
 import os
 import smtplib
 import sys
+import time
 from collections import Counter
 from email.mime.text import MIMEText
 
@@ -388,8 +389,18 @@ def load_email_config():
     return {}
 
 
-def send_report_email(report):
-    """只在有問題時被呼叫——每天都寄會被忽略，等於沒做。寄到 ADMIN_EMAIL。"""
+def send_report_email(report, has_issues):
+    """寄健檢報告到 ADMIN_EMAIL。
+
+    2026-08-10 改成「每個工作日都寄」（原本只在有問題時寄）。改的原因：使用者連續
+    兩次問「怎麼沒收到信」——因為「沒收到信」有歧義，分不出是「今天沒問題」還是
+    「健檢又壞了」。08-07 那次真的是壞了（排程有跑但 print 崩潰），從信箱看起來
+    卻跟正常的日子一模一樣。
+
+    原本擔心的「每天都寄會被忽略」用**主旨列**解決：正常是「✅ 一切正常」、有問題是
+    「⚠️ 發現 N 個問題」，掃一眼主旨就知道要不要開。可以在 Gmail 設篩選器把 ✅ 的
+    自動封存，只讓 ⚠️ 的留在收件匣。
+    """
     config = load_email_config()
     sender = config.get('sender_email', '')
     password = config.get('app_password', '')
@@ -411,7 +422,10 @@ def send_report_email(report):
     msg = MIMEText(report, 'plain', 'utf-8')
     msg['From'] = sender
     msg['To'] = ADMIN_EMAIL
-    msg['Subject'] = "【HireFlow 每日健檢】發現問題"
+    # 主旨自己帶訊號：掃一眼就知道要不要開，不用點進去看內文
+    _today = time.strftime('%m/%d')
+    msg['Subject'] = (f"⚠️ HireFlow 健檢發現問題（{_today}）" if has_issues
+                      else f"✅ HireFlow 健檢正常（{_today}）")
 
     last_err = None
     for port in ports:
@@ -467,9 +481,11 @@ def main():
     except Exception:
         print(report.encode('ascii', 'replace').decode('ascii'))
 
-    # 只有「新問題」才寄信；只剩已知例外時不寄（否則每天一封會被養成忽略的習慣）
-    if args.email and issues:
-        send_report_email(report)
+    # 每個工作日都寄（不管有沒有問題）——「沒收到信」對使用者來說有歧義，分不出是
+    # 沒問題還是健檢自己壞了。改成天天寄、用主旨列區分 ✅/⚠️，這樣「該來的信沒來」
+    # 本身就是一個明確的故障訊號。
+    if args.email:
+        send_report_email(report, bool(issues))
 
 
 if __name__ == '__main__':
