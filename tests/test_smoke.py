@@ -255,3 +255,62 @@ def test_健檢報告編號總數與檢查數一致():
     n = len([x for x in dir(hc) if x.startswith('check_') and callable(getattr(hc, x))])
     assert hc.TOTAL_CHECKS == n, f"TOTAL_CHECKS={hc.TOTAL_CHECKS} 但實際有 {n} 個 check_ 函式"
     assert 'TOTAL_CHECKS' in inspect.getsource(hc.format_report), "報告編號必須讀 TOTAL_CHECKS"
+
+
+# ── 6. 面試未到（no_show）獨立類別（2026-08-12）────────────────────
+
+def test_面試未到不是未通過():
+    # 沒出席的人沒被評估過，不該進面試通過率的分母。以前兩者都寫「未通過」。
+    from hr_schema import RESULT_MAP, CLOSE_REASON_TO_INTERVIEW
+    assert RESULT_MAP["面試未到"] == "no_show"
+    assert RESULT_MAP["未通過"] == "fail", "未通過不能被連坐改掉"
+    assert CLOSE_REASON_TO_INTERVIEW["面試未到"][0] == "面試未到"
+    assert CLOSE_REASON_TO_INTERVIEW["面試未通過"][0] == "未通過"
+    # 結案原因清單裡兩個選項都還在，沒被合併
+    assert "面試未到" in hr_schema.CLOSE_REASONS
+    assert "面試未通過" in hr_schema.CLOSE_REASONS
+
+
+def test_健檢抓得到有面試紀錄但階段沒推進():
+    # 葉宇騫案例的反向：05 有「未通過」記分卡，但 03 還停在約定面試 → 漏斗少算他
+    import daily_health_check as hc
+    h3 = list(S3_COLS)
+    h5 = ['interview_id', 'application_id', 'candidate_id', 'job_id', '職缺名稱',
+          '姓名', '面試日期', '面試時間', '面試官', '面試類型', '面試結果']
+
+    def mk3(app_id, flow, pre=''):
+        r = [''] * len(h3)
+        r[h3.index('application_id')] = app_id
+        r[h3.index('流程狀態')] = flow
+        r[h3.index('結案前階段')] = pre
+        r[h3.index('姓名')] = '測試'
+        return r
+
+    def mk5(app_id, result):
+        r = [''] * len(h5)
+        r[1] = app_id
+        r[5] = '測試'
+        r[6] = '2026-06-25'
+        r[10] = result
+        return r
+
+    # 有「未通過」記分卡但階段停在約定面試 → 該報
+    issue = hc.check_11_interview_ahead_of_stage(
+        [h3, mk3('APP-1', '已結案', '約定面試')], [h5, mk5('APP-1', '未通過')])
+    assert issue is not None
+
+    # 同一筆改成「面試未到」→ 階段停在約定面試是正確的，不該報
+    assert hc.check_11_interview_ahead_of_stage(
+        [h3, mk3('APP-1', '已結案', '約定面試')], [h5, mk5('APP-1', '面試未到')]) is None
+
+    # 「待定」是排了還沒填結果，也不該報
+    assert hc.check_11_interview_ahead_of_stage(
+        [h3, mk3('APP-1', '已結案', '約定面試')], [h5, mk5('APP-1', '待定')]) is None
+
+    # 階段已到已面試 → 正常，不該報
+    assert hc.check_11_interview_ahead_of_stage(
+        [h3, mk3('APP-1', '已面試')], [h5, mk5('APP-1', '未通過')]) is None
+
+    # 孤兒紀錄（03 找不到對應 app_id）是 check_7 的守備範圍，這裡不重複報
+    assert hc.check_11_interview_ahead_of_stage(
+        [h3, mk3('APP-1', '已面試')], [h5, mk5('APP-不存在', '未通過')]) is None

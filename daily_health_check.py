@@ -32,7 +32,7 @@ ADMIN_EMAIL = 'yunyu@ls3c.com.tw'
 
 # 檢查項總數。報告裡的 [n/N] 與「檢查 N 項」都讀這個值——以前寫死 9，加檢查時
 # 很容易漏改其中一處，變成「[10/9]」這種對不上的編號。
-TOTAL_CHECKS = 10
+TOTAL_CHECKS = 11
 
 
 # 已知並「決定不處理」的例外。這裡的每一筆都會照樣出現在報告底部（所以健檢是不是
@@ -377,6 +377,68 @@ def check_10_first_entry_date(s3_values, s2_values):
     )
 
 
+def check_11_interview_ahead_of_stage(s3_values, s5_values):
+    """05 有「已完成」的面試紀錄，但 03 的流程狀態沒到「已面試」。
+
+    2026-08-12 加入，補 check_7 的反方向：check_7 抓「流程狀態超前面試紀錄」
+    （看板說面試過了但沒紀錄），這裡抓「面試紀錄超前流程狀態」（有記分卡但看板
+    還停在前面的階段）。兩邊都會讓漏斗的「進行面試」跟面試場次對不起來。
+
+    只看面試結果是「通過」或「未通過」的紀錄——那代表面試真的發生且被評估過。
+    「待定」是排了還沒填結果、「面試未到」是人根本沒出席，這兩種流程狀態停在
+    約定面試是正確的，不該報。
+    """
+    h3 = s3_values[0] if s3_values else []
+    h5 = s5_values[0] if s5_values else []
+    if '面試結果' not in h5 or 'application_id' not in h5:
+        return None
+    i_app, i_flow = _idx(h3, 'application_id'), _idx(h3, '流程狀態')
+    i_pre, i_name = _idx(h3, '結案前階段'), _idx(h3, '姓名')
+    j_app, j_res = h5.index('application_id'), h5.index('面試結果')
+    j_name = h5.index('姓名') if '姓名' in h5 else j_app
+    j_date = h5.index('面試日期') if '面試日期' in h5 else j_app
+
+    _ORDER = ['screening', 'recommended', 'invited', 'interview_scheduled',
+              'interviewed', 'offer_pending', 'hired']
+    stage_rank = {k: i for i, k in enumerate(_ORDER)}
+
+    def rank_of(row):
+        flow = (row[i_flow] if len(row) > i_flow else '').strip()
+        stage = FLOW_TO_STAGE.get(flow, 'screening')
+        if stage == 'rejected':
+            pre = (row[i_pre] if len(row) > i_pre else '').strip()
+            stage = FLOW_TO_STAGE.get(pre, 'screening')
+        return stage_rank.get(stage, 0)
+
+    by_app = {row[i_app]: row for row in s3_values[1:] if len(row) > i_app and row[i_app]}
+    lines = []
+    for row in s5_values[1:]:
+        res = (row[j_res] if len(row) > j_res else '').strip()
+        if res not in ('通過', '未通過'):
+            continue
+        app_id = row[j_app] if len(row) > j_app else ''
+        target = by_app.get(app_id)
+        if target is None:
+            continue  # 孤兒紀錄是 check_7 的守備範圍，這裡不重複報
+        if rank_of(target) < stage_rank['interviewed']:
+            who = (row[j_name] if len(row) > j_name else '') or '(無姓名)'
+            when = (row[j_date] if len(row) > j_date else '') or '(無日期)'
+            flow = (target[i_flow] if len(target) > i_flow else '').strip()
+            pre = (target[i_pre] if len(target) > i_pre else '').strip()
+            lines.append(f"{who}（{app_id}）：05 有「{res}」紀錄（{when}），"
+                         f"但 03 流程狀態＝{flow or '(空白)'}"
+                         f"{f'／結案前＝{pre}' if pre else ''}")
+    if not lines:
+        return None
+    return Issue(
+        11, f"面試紀錄超前流程狀態 —— {len(lines)} 筆", lines,
+        "這個人有已完成的面試記分卡，但看板上的階段還停在面試之前，"
+        "漏斗的「進行面試」會少算他，面試場次跟漏斗數字對不起來。",
+        "確認這個人是不是真的面試過；是的話把看板階段推到「已面試」，"
+        "不是的話（例如人沒出席）把 05 那筆的面試結果改成「面試未到」。",
+    )
+
+
 def format_report(issues, known, total_rows):
     out = []
     if issues:
@@ -424,6 +486,7 @@ def run_checks():
         check_8_batch_date(s3_values),
         check_9_library_vs_sheet(s3_values),
         check_10_first_entry_date(s3_values, s2_values),
+        check_11_interview_ahead_of_stage(s3_values, s5_values),
     ]
     # 把已知例外從「新問題」裡分出來：新問題才會寄信，已知例外只列在報告底部
     issues, known = [], []

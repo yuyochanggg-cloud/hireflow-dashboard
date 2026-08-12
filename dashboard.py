@@ -329,8 +329,8 @@ from sync_queue import load_pending as _load_pending_sync, remove_pending as _re
 # (bg, text, border, icon) tuple 形狀，呼叫端不用改。
 from hr_schema import GRADE_META as _GRADE_META_SRC
 GRADE_META = {k: (v["bg"], v["fg"], v["border"], v["icon"]) for k, v in _GRADE_META_SRC.items()}
-RESULT_LABEL = {"pending": "待定", "pass": "通過", "fail": "未通過"}
-RESULT_COLOR = {"pending": "#d97706", "pass": "#059669", "fail": "#dc2626"}
+RESULT_LABEL = {"pending": "待定", "pass": "通過", "fail": "未通過", "no_show": "面試未到"}
+RESULT_COLOR = {"pending": "#d97706", "pass": "#059669", "fail": "#dc2626", "no_show": "#64748b"}
 WD_ZH = ["一", "二", "三", "四", "五", "六", "日"]
 
 # ── Config ────────────────────────────────────────────────────
@@ -407,7 +407,7 @@ from hr_schema import (
     FLOW_TO_STAGE, STAGE_TO_FLOW,
     RESULT_MAP as _RESULT_MAP,
     STATUS_MAP as _STATUS_MAP,
-    CLOSE_REASONS, CLOSE_REASON_TO_INTERVIEW_NOTE,
+    CLOSE_REASONS, CLOSE_REASON_TO_INTERVIEW,
     S3_COLS, SHEET_HEADERS,
 )
 
@@ -828,12 +828,14 @@ def update_stage(app_id: str, new_stage: str, close_reason: str = "") -> bool:
             ws.update_cell(row_num, reason_col, close_reason)
         ws.update_cell(row_num, flow_col, flow)
         # 結案原因是「面試未到」或「面試未通過」，順便同步一筆05_面試主檔
-        # 未通過紀錄，理由跟上面推進離開已面試自動同步通過是同一件事——
+        # 紀錄，理由跟上面推進離開已面試自動同步通過是同一件事——
         # 不要再靠事後回補，資料要在動作發生的當下就記對。
-        if new_stage == "rejected" and close_reason in CLOSE_REASON_TO_INTERVIEW_NOTE:
-            _sync_interview_fail_on_close(
+        # 兩者寫進去的「面試結果」不同：未到寫「面試未到」、未通過寫「未通過」。
+        if new_stage == "rejected" and close_reason in CLOSE_REASON_TO_INTERVIEW:
+            _iv_result, _iv_note = CLOSE_REASON_TO_INTERVIEW[close_reason]
+            _sync_interview_result_on_close(
                 app_id, target.get("candidate_id", ""), target.get("job_id", ""),
-                target.get("姓名", ""), CLOSE_REASON_TO_INTERVIEW_NOTE[close_reason],
+                target.get("姓名", ""), _iv_result, _iv_note,
             )
         # 從「已面試」推進到更後面的階段，隱含面試結果是通過——但HR多半是
         # 直接在看板/候選人頁按推進，沒有另外回頭去面試管理的記分卡把結果
@@ -881,13 +883,17 @@ def _sync_interview_pass_if_pending(app_id: str, candidate_id: str) -> None:
     except Exception:
         pass
 
-def _sync_interview_fail_on_close(app_id: str, candidate_id: str, job_id: str,
-                                   name: str, note: str) -> None:
+def _sync_interview_result_on_close(app_id: str, candidate_id: str, job_id: str,
+                                     name: str, result_text: str, note: str) -> None:
     """結案原因選「面試未到」或「面試未通過」時，把05_面試主檔對應那筆的
-    面試結果明確寫成「未通過」（這是HR當下明確選擇的原因，不是被動推論，
+    面試結果明確寫成 result_text（這是HR當下明確選擇的原因，不是被動推論，
     所以直接覆蓋，不像_sync_interview_pass_if_pending只補待定/空白）；
     如果根本沒有面試紀錄（例如面試未到，從沒真的排過面試/沒建過紀錄），
     直接用save_interview建一筆，日期用今天（結案當下），備註寫結案原因。
+
+    result_text 由 CLOSE_REASON_TO_INTERVIEW 決定：「面試未到」→「面試未到」、
+    「面試未通過」→「未通過」。2026-08-12 之前兩者都寫「未通過」，讓沒出席的人
+    進了面試通過率的分母。
     """
     sh = _get_sheet()
     if not sh:
@@ -904,7 +910,7 @@ def _sync_interview_fail_on_close(app_id: str, candidate_id: str, job_id: str,
                     ws, target_iv["_row"], target_iv.get("interview_id", "")):
                 return
             if "面試結果" in headers:
-                ws.update_cell(target_iv["_row"], headers.index("面試結果") + 1, "未通過")
+                ws.update_cell(target_iv["_row"], headers.index("面試結果") + 1, result_text)
             if "面試官備註" in headers:
                 ws.update_cell(target_iv["_row"], headers.index("面試官備註") + 1, note)
         else:
@@ -912,7 +918,7 @@ def _sync_interview_fail_on_close(app_id: str, candidate_id: str, job_id: str,
                 "candidate_id": candidate_id, "application_id": app_id,
                 "job_id": job_id, "name": name,
                 "scheduled_at": date.today().isoformat(), "interviewer": "",
-                "result": "fail", "notes": note,
+                "result": _RESULT_MAP.get(result_text, "fail"), "notes": note,
             })
     except Exception:
         pass
@@ -993,7 +999,8 @@ def save_interview(data: dict) -> bool:
             "面試時間":       iv_time,
             "面試官":         data.get("interviewer", ""),
             "面試類型":       data.get("interview_type", ""),
-            "面試結果":       {"pass": "通過", "fail": "未通過"}.get(data.get("result", ""), "待定"),
+            "面試結果":       {"pass": "通過", "fail": "未通過",
+                               "no_show": "面試未到"}.get(data.get("result", ""), "待定"),
             "面試官備註":     data.get("notes", ""),
             "下一步行動":     data.get("next_action", ""),
             "記錄時間":       datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -2150,7 +2157,8 @@ def page_interviews():
         for col, lbl, key in zip(sc_cols, labels, keys):
             scores[key] = col.slider(lbl, 1, 5, 3, key=f"sc_{key}_{cid2}")
 
-        result_opts = {"pending (待定)": "pending", "pass (通過)": "pass", "fail (未通過)": "fail"}
+        result_opts = {"pending (待定)": "pending", "pass (通過)": "pass",
+                       "fail (未通過)": "fail", "no_show (面試未到)": "no_show"}
         sel_res_lbl = st.selectbox("面試結果", list(result_opts.keys()), key=f"sc_res_{cid2}")
         sel_res     = result_opts[sel_res_lbl]
         notes_text  = st.text_area(
@@ -2184,6 +2192,11 @@ def page_interviews():
                 elif sel_res == "fail":
                     update_stage(cid2, "rejected")
                     st.success(f"✅ 記分卡已儲存！{sel_c2['name']} → 已結案（未通過）")
+                elif sel_res == "no_show":
+                    # 沒出席就沒被評估過，不推進到「已面試」，也不自動結案——
+                    # 改期再約還是直接結案是HR的判斷，程式不要幫忙決定。
+                    st.success(f"✅ 記分卡已儲存！{sel_c2['name']} → 面試未到"
+                               "（流程狀態不變，要改期或結案請自行操作）")
                 else:
                     st.success("✅ 記分卡已儲存！")
                 st.rerun()
@@ -2478,12 +2491,35 @@ def page_analytics():
     _fc = dict(zip(funnel_labels, funnel_counts))
 
     # ── 指標行 ────────────────────────────────────────────────
+    # 這裡刻意分成兩組，因為它們的時間語意不同，混在一起看必然對不起來：
+    #   左半「本期新進的這批人」：母體是初次進庫日期落在統計區間內的候選人，
+    #      往後看他們最終走到哪一步。後段階段天生會被低估——這個月剛進來的人
+    #      本來就還沒輪到面試，不是漏算。
+    #   右半「本期實際發生」：用事件日期算（面試日期／實際報到日），不管這個人
+    #      是哪個月進來的。要回答「這個月做了幾場面試」就是看這一格。
+    # 使用者 2026-08-12 實際回報的落差就是這個：八月真的面了4場，但那4人裡有2人
+    # 是七月進庫的，所以左半只算到2。兩個數字都對，只是在回答不同問題。
     st.markdown("---")
+    st.caption("**本期新進的這批人**（母體＝初次進庫日期落在統計區間內）"
+               "——後段階段會因為「時候未到」而偏低，不代表漏算")
     am1, am2, am3, am4 = st.columns(4)
     am1.metric("新進候選人", _fc["新進候選人"])
     am2.metric("進行面試",   _fc["進行面試"])
     am3.metric("面試通過",   _fc["面試通過"])
     am4.metric("報到",       _fc["報到"])
+
+    # 面試未到不算一場面試——人沒出席，沒有任何東西被評估過
+    _ivs_held = [iv for iv in ivs_f if iv.get("result") != "no_show"]
+    _ivs_noshow = len(ivs_f) - len(_ivs_held)
+    st.caption("**本期實際發生**（用面試日期／實際報到日算，不論這個人哪個月進來）")
+    bm1, bm2, bm3 = st.columns(3)
+    bm1.metric("本期面試場次", len(_ivs_held),
+               help="05_面試主檔中面試日期落在本區間的筆數，不含「面試未到」。"
+                    "面試日期空白的紀錄無法歸月，不會出現在這裡。")
+    bm2.metric("本期面試未到", _ivs_noshow,
+               help="約了但沒出席。不算一場面試，也不進面試通過率的分母。")
+    bm3.metric("本期報到人數", len(hires_f),
+               help="06_員工主檔中實際報到日落在本區間的人數。")
     st.markdown("---")
 
     ch1, ch2 = st.columns(2)
