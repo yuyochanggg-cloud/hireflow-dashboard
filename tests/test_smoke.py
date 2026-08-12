@@ -16,6 +16,7 @@ from hr_schema import (
     FLOW_TO_STAGE, STAGE_KEYS, grade_badge_html,
 )
 import app  # module-level 有 st.set_page_config，bare mode 下是 no-op
+import dashboard as dashboard_module  # 同上；只用來對原始碼做語意斷言
 
 
 # ── 1. Schema 契約（守 2026-07-09 的 13欄/19欄錯位 bug）─────────────
@@ -314,3 +315,17 @@ def test_健檢抓得到有面試紀錄但階段沒推進():
     # 孤兒紀錄（03 找不到對應 app_id）是 check_7 的守備範圍，這裡不重複報
     assert hc.check_11_interview_ahead_of_stage(
         [h3, mk3('APP-1', '已面試')], [h5, mk5('APP-不存在', '未通過')]) is None
+
+
+def test_本期報到人數要用實際報到日不是預計報到日():
+    # 2026-08-12 實跑抓到的 bug：八月真的報到2人，指標卻顯示0，因為沿用了既有的
+    # hires_f（依「預計報到日」篩，那兩人的預計報到日是七月填的）。
+    # 06_員工主檔的 start_date=預計報到日、actual_start_date=實際報到日，
+    # 名字很像但語意完全不同，混用不會報錯、只會靜默算錯。
+    import inspect
+    src = inspect.getsource(dashboard_module.page_analytics)
+    assert 'onboarded_f' in src, "本期報到人數必須用依 actual_start_date 篩的清單"
+    # 找到那一行 metric，確認它吃的是 onboarded_f
+    line = next(l for l in src.splitlines() if '"本期報到人數"' in l)
+    assert 'onboarded_f' in line, f"本期報到人數吃錯清單了：{line.strip()}"
+    assert 'actual_start_date' in src

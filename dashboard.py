@@ -2445,7 +2445,14 @@ def page_analytics():
 
     cands_f = [c for c in all_cands if in_range(c, "created_at")]
     ivs_f   = [iv for iv in all_ivs  if in_range(iv, "scheduled_at")]
-    hires_f = [h  for h  in all_hires if in_range(h,  "start_date")]
+    # 06_員工主檔有兩個報到日期，語意完全不同，混用一次就會像 2026-08-12 那樣
+    # 顯示 0（八月真的報到2人，但他們的「預計報到日」是七月填的，不在八月）：
+    #   start_date        = 預計報到日（錄取時填的計畫值，可能還沒到、也可能沒實現）
+    #   actual_start_date = 實際報到日（真的來上班了才有值）
+    # 「本期報到人數」問的是「這個月真的有幾個人來上班」→ 必須用 actual_start_date。
+    hires_f     = [h for h in all_hires if in_range(h, "start_date")]
+    onboarded_f = [h for h in all_hires
+                   if h.get("actual_start_date") and in_range(h, "actual_start_date")]
 
     # 「曾經到達過」用累計判斷，已結案的人用「結案前階段」（prestage）回推
     # 走到哪一步——跟page_overview的_ever_reached同一套邏輯，否則已結案的
@@ -2490,36 +2497,33 @@ def page_analytics():
     # 階段，所有索引就靜默指到錯的指標（跟這系統踩過好幾次的欄位錯位同一種脆弱）。
     _fc = dict(zip(funnel_labels, funnel_counts))
 
-    # ── 指標行 ────────────────────────────────────────────────
-    # 這裡刻意分成兩組，因為它們的時間語意不同，混在一起看必然對不起來：
-    #   左半「本期新進的這批人」：母體是初次進庫日期落在統計區間內的候選人，
-    #      往後看他們最終走到哪一步。後段階段天生會被低估——這個月剛進來的人
-    #      本來就還沒輪到面試，不是漏算。
-    #   右半「本期實際發生」：用事件日期算（面試日期／實際報到日），不管這個人
-    #      是哪個月進來的。要回答「這個月做了幾場面試」就是看這一格。
-    # 使用者 2026-08-12 實際回報的落差就是這個：八月真的面了4場，但那4人裡有2人
-    # 是七月進庫的，所以左半只算到2。兩個數字都對，只是在回答不同問題。
+    # ── 指標行：只放「本期實際發生」────────────────────────────
+    # 2026-08-12 改版。原本這一行放的是漏斗的 cohort 數字（母體＝初次進庫日期
+    # 落在區間內的人，往後看他們最終走到哪）。那個語意本身沒錯，但放在整頁最
+    # 顯眼的位置很危險：以使用者的招募節奏，八月進來的人最快也要九、十月才會
+    # 面試/報到，所以選「本月」時後段三格結構上註定接近 0——不是漏算，是時候
+    # 未到。使用者同一天被它誤導兩次（先是面試 4→顯示2，再是報到 2→顯示0）。
+    #
+    # 所以 KPI 行改成用事件日期算的「這個月實際做了什麼」，cohort 那組數字只留
+    # 在下面的漏斗圖（那張圖本來就是 cohort 語意，配 caption 說明即可）。選
+    # 「本年度」「全部」時漏斗才真的有意義，那時本來就會往下看圖。
     st.markdown("---")
-    st.caption("**本期新進的這批人**（母體＝初次進庫日期落在統計區間內）"
-               "——後段階段會因為「時候未到」而偏低，不代表漏算")
-    am1, am2, am3, am4 = st.columns(4)
-    am1.metric("新進候選人", _fc["新進候選人"])
-    am2.metric("進行面試",   _fc["進行面試"])
-    am3.metric("面試通過",   _fc["面試通過"])
-    am4.metric("報到",       _fc["報到"])
-
     # 面試未到不算一場面試——人沒出席，沒有任何東西被評估過
     _ivs_held = [iv for iv in ivs_f if iv.get("result") != "no_show"]
     _ivs_noshow = len(ivs_f) - len(_ivs_held)
-    st.caption("**本期實際發生**（用面試日期／實際報到日算，不論這個人哪個月進來）")
-    bm1, bm2, bm3 = st.columns(3)
-    bm1.metric("本期面試場次", len(_ivs_held),
+    st.caption("**本期實際發生**（用事件日期算：面試日期／實際報到日，"
+               "不論這個人哪個月進來）")
+    am1, am2, am3, am4 = st.columns(4)
+    am1.metric("本期新進候選人", _fc["新進候選人"],
+               help="初次進庫日期落在本區間的候選人數。")
+    am2.metric("本期面試場次", len(_ivs_held),
                help="05_面試主檔中面試日期落在本區間的筆數，不含「面試未到」。"
                     "面試日期空白的紀錄無法歸月，不會出現在這裡。")
-    bm2.metric("本期面試未到", _ivs_noshow,
+    am3.metric("本期面試未到", _ivs_noshow,
                help="約了但沒出席。不算一場面試，也不進面試通過率的分母。")
-    bm3.metric("本期報到人數", len(hires_f),
-               help="06_員工主檔中實際報到日落在本區間的人數。")
+    am4.metric("本期報到人數", len(onboarded_f),
+               help="06_員工主檔中「實際報到日」落在本區間的人數。"
+                    "只填了預計報到日、還沒真的來上班的人不算在內。")
     st.markdown("---")
 
     ch1, ch2 = st.columns(2)
@@ -2527,6 +2531,11 @@ def page_analytics():
     # ── 招募漏斗 ──────────────────────────────────────────────
     with ch1:
         st.subheader("📊 招募漏斗")
+        # 這張圖是 cohort 語意，跟上面的 KPI 行不是同一種數字，一定要講清楚，
+        # 否則「上面寫面試4場、這裡寫進行面試2人」看起來就像系統壞了。
+        st.caption("母體＝**本期新進**的候選人，往後追他們最終走到哪一步。"
+                   "區間選得短時後段會偏低（這個月剛進來的人還沒輪到面試），"
+                   "**不是漏算**；要看「本期實際做了幾場」請看上面的 KPI。")
         fig_funnel = go.Figure(go.Funnel(
             y=funnel_labels, x=funnel_counts,
             textinfo="value+percent initial",
@@ -2696,7 +2705,8 @@ def page_analytics():
                     "候選人ID":   h.get("candidate_id"),
                     "聘用類型":   h.get("employment_type"),
                     "月薪":       h.get("proposed_salary"),
-                    "報到日":     h.get("start_date"),
+                    "預計報到日": h.get("start_date"),
+                    "實際報到日": h.get("actual_start_date") or "",
                     "錄取通知":  h.get("錄取通知寄出"),
                     "MIS單":     h.get("MIS聯絡單已送"),
                 } for h in hires_f]).to_excel(writer, sheet_name="錄取", index=False)
