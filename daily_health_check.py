@@ -14,6 +14,7 @@ import glob
 import json
 import os
 import smtplib
+import datetime
 import sys
 import time
 from collections import Counter
@@ -439,8 +440,94 @@ def check_11_interview_ahead_of_stage(s3_values, s5_values):
     )
 
 
-def format_report(issues, known, total_rows):
+# ── 待催辦 ────────────────────────────────────────────────────────────────
+# 這一段刻意**不做成 check_N**：它不是「資料壞了」，是「有人該催了」。混進健檢的
+# Issue 清單會讓主旨的 ⚠️ 同時代表兩件性質完全不同的事，久了就分不出哪封該急。
+# 但它照樣出現在同一封每日信裡（信本來就每個工作日都寄），並在主旨帶一個數字。
+#
+# 為什麼追這個：HR推薦 46 → 主管推進 21，**55% 的流失卡在主管端**，是整條漏斗最大
+# 的單一斷點，而在 2026-08-12 之前完全沒有測量基礎——「推薦日」849 筆裡只有 13 筆
+# 有值（全是手動填的），因為寄推薦信那條路徑從來沒寫過這一欄。
+FOLLOWUP_RULES = [
+    # (流程狀態, 等誰, 幾個工作日算逾期)
+    ('已推薦主管', '用人主管', 3),
+    ('已傳邀約',   '候選人',   3),
+]
+
+
+def _workdays_since(date_str, today):
+    """date_str 到 today 之間的工作日數（不含起日、含today）；不可解析回 None。
+
+    刻意不處理國定假日——維護一份假日表的成本高於它帶來的精度，而這個數字的用途
+    是「該不該催」，差一兩天不影響判斷。
+    """
+    try:
+        d = datetime.date.fromisoformat(str(date_str)[:10])
+    except Exception:
+        return None
+    if d > today:
+        return None
+    n, cur = 0, d
+    while cur < today:
+        cur += datetime.timedelta(days=1)
+        if cur.weekday() < 5:
+            n += 1
+    return n
+
+
+def build_followup_lines(s3_values, today=None):
+    """回傳 (逾期明細行, 逾期筆數, 無日期可判斷的筆數)。"""
+    today = today or datetime.date.today()
+    h = s3_values[0] if s3_values else []
+    i_flow, i_name = _idx(h, '流程狀態'), _idx(h, '姓名')
+    i_job, i_upd = _idx(h, '職缺名稱'), _idx(h, '人才狀態更新日')
+    i_rec, i_recd = _idx(h, '推薦主管'), _idx(h, '推薦日')
+
+    def g(row, i):
+        return (row[i] if len(row) > i else '').strip()
+
+    rows, no_date = [], 0
+    for row in s3_values[1:]:
+        flow = g(row, i_flow)
+        rule = next((r for r in FOLLOWUP_RULES if r[0] == flow), None)
+        if not rule:
+            continue
+        _, who, threshold = rule
+        # 推薦日優先（語意最精準：推薦這件事發生在哪天），沒有才退回人才狀態更新日
+        basis = g(row, i_recd) if flow == '已推薦主管' and g(row, i_recd) else g(row, i_upd)
+        days = _workdays_since(basis, today) if basis else None
+        if days is None:
+            no_date += 1
+            continue
+        if days < threshold:
+            continue
+        target = g(row, i_rec) if flow == '已推薦主管' else who
+        rows.append((days, f"{g(row, i_name) or '(無姓名)'}｜{g(row, i_job)}｜"
+                           f"卡在「{flow}」{days} 個工作日｜等 {target or who}"))
+    rows.sort(key=lambda x: -x[0])
+    return [line for _, line in rows], len(rows), no_date
+
+
+def format_followup(s3_values, today=None):
+    lines, n, no_date = build_followup_lines(s3_values, today)
     out = []
+    if lines:
+        out.append(f"⏰ 待催辦 —— {n} 筆（超過 3 個工作日沒有進展）")
+        for line in lines:
+            out.append(f"   {line}")
+        out.append("")
+    if no_date:
+        out.append(f"   （另有 {no_date} 筆卡在這些階段但沒有日期可判斷，"
+                   "多半是 2026-08-12 補寫入路徑之前的舊資料，會隨新的推薦自然汰換）")
+        out.append("")
+    return out, n
+
+
+def format_report(issues, known, total_rows, followup_lines=None):
+    out = []
+    if followup_lines:
+        out.extend(followup_lines)
+        out.append("── 資料健檢 ──────────────────────────────────────")
     if issues:
         for issue in issues:
             out.append(f"⚠️ [{issue.no}/{TOTAL_CHECKS}] {issue.title} —— {len(issue.lines)} 項" if len(issue.lines) != 1
@@ -499,7 +586,7 @@ def run_checks():
         if new_lines:
             c.lines = new_lines
             issues.append(c)
-    return issues, known, total_rows
+    return issues, known, total_rows, s3_values
 
 
 def load_email_config():
@@ -512,7 +599,7 @@ def load_email_config():
     return {}
 
 
-def send_report_email(report, has_issues):
+def send_report_email(report, has_issues, followup_n=0):
     """寄健檢報告到 ADMIN_EMAIL。
 
     2026-08-10 改成「每個工作日都寄」（原本只在有問題時寄）。改的原因：使用者連續
@@ -547,8 +634,11 @@ def send_report_email(report, has_issues):
     msg['To'] = ADMIN_EMAIL
     # 主旨自己帶訊號：掃一眼就知道要不要開，不用點進去看內文
     _today = time.strftime('%m/%d')
-    msg['Subject'] = (f"⚠️ HireFlow 健檢發現問題（{_today}）" if has_issues
-                      else f"✅ HireFlow 健檢正常（{_today}）")
+    _state = (f"⚠️ HireFlow 健檢發現問題（{_today}）" if has_issues
+              else f"✅ HireFlow 健檢正常（{_today}）")
+    # 待催辦數放進主旨：Opus 2026-08-12 的建議——每天都寄綠燈信有習慣化風險，
+    # 主旨要能 0.5 秒掃完並讓需要行動的日子在視覺上跳出來。
+    msg['Subject'] = f"{_state}｜待催辦 {followup_n}" if followup_n else _state
 
     last_err = None
     for port in ports:
@@ -595,8 +685,9 @@ def main():
     ap.add_argument('--email', action='store_true', help='有問題時寄報告給自己')
     args = ap.parse_args()
 
-    issues, known, total_rows = run_checks()
-    report = format_report(issues, known, total_rows)
+    issues, known, total_rows, s3_values = run_checks()
+    followup_lines, followup_n = format_followup(s3_values)
+    report = format_report(issues, known, total_rows, followup_lines)
     # 上面已經把 stdout 轉成 utf-8，理論上不會再炸；這層是保險——「印不出來」是
     # 顯示問題，絕不該讓它擋掉真正重要的通知（這正是 08-07 事故的形狀）。
     try:
@@ -608,7 +699,7 @@ def main():
     # 沒問題還是健檢自己壞了。改成天天寄、用主旨列區分 ✅/⚠️，這樣「該來的信沒來」
     # 本身就是一個明確的故障訊號。
     if args.email:
-        send_report_email(report, bool(issues))
+        send_report_email(report, bool(issues), followup_n)
 
 
 if __name__ == '__main__':

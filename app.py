@@ -1134,12 +1134,23 @@ def update_application_status_gsheet(spreadsheet_id, job_name, candidate, new_st
     except Exception as e:
         return False, f"更新失敗：{e}"
 
-def update_application_statuses_batch(spreadsheet_id, job_name, candidates, new_status):
+def update_application_statuses_batch(spreadsheet_id, job_name, candidates, new_status,
+                                       recommended_to=None):
     """把多位候選人在 03_應徵主檔 的「流程狀態」一次更新為 new_status。
     跟 update_application_status_gsheet 邏輯相同，差別是整批只讀表一次、只寫一次
     （batch_update），避免 N 個候選人觸發 N 次全表讀寫、增加 429 風險。
     回傳 (ok_pairs, fail_pairs)：兩者皆為 (candidate, msg) tuple 列表，
     候選人物件保留原樣方便呼叫端做後續處理（如記入待補清單）。
+
+    2026-08-12 補三個欄位。原本這裡只寫「流程狀態」，而 dashboard 的 update_stage
+    會順便寫「人才狀態更新日」——同一件事兩條路徑做法不一致，缺的那條躲了幾個月：
+    849 筆裡「推薦日」只有 13 筆有值（全是手動填的），卡在「已推薦主管」的 14 人
+    裡 13 人的「人才狀態更新日」也是空的。後果是「推薦後幾天沒回」這個追蹤完全
+    算不出來，而那正是最大的流失點（HR推薦46 → 主管推進21，55%卡在主管端）。
+
+    recommended_to：實際收到推薦信的主管顯示名（例如「設計部 許媚喬」）。
+    有給且 new_status 是「已推薦主管」時，一併寫入「推薦主管」「推薦日」。
+    寄信那一刻呼叫端手上就有收件主管，只是以前沒送進來。
     """
     if not _GSPREAD_AVAILABLE:
         return [], [(c, "請先執行 pip install gspread") for c in candidates]
@@ -1157,9 +1168,23 @@ def update_application_statuses_batch(spreadsheet_id, job_name, candidates, new_
     header = existing[0]
     if "流程狀態" not in header:
         return [], [(c, "找不到「流程狀態」欄") for c in candidates]
-    status_col_letter = gspread.utils.rowcol_to_a1(1, header.index("流程狀態") + 1)
-    status_col_letter = re.sub(r'\d+$', '', status_col_letter)  # 只要欄字母（如 "Q"）
+    def _col_letter(col_name):
+        """欄名 → A1 欄字母；欄位不存在回 None（舊試算表可能缺欄，不能因此整批失敗）。"""
+        if col_name not in header:
+            return None
+        a1 = gspread.utils.rowcol_to_a1(1, header.index(col_name) + 1)
+        return re.sub(r'\d+$', '', a1)
+
+    status_col_letter = _col_letter("流程狀態")
+    updated_col_letter = _col_letter("人才狀態更新日")
+    recommender_col_letter = _col_letter("推薦主管")
+    recommend_date_col_letter = _col_letter("推薦日")
     row_by_appid = {row[0]: i for i, row in enumerate(existing[1:], start=2) if row}
+
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    # 只有「已推薦主管」才寫推薦主管/推薦日——這兩欄的語意是「推薦這一次」發生的
+    # 事，其他階段轉換不該覆蓋它，否則之後算不出「從推薦到現在幾天」。
+    _write_recommend = bool(recommended_to) and new_status == "已推薦主管"
 
     ok_pairs, fail_pairs, updates = [], [], []
     for c in candidates:
@@ -1170,6 +1195,14 @@ def update_application_statuses_batch(spreadsheet_id, job_name, candidates, new_
             fail_pairs.append((c, f"找不到（{app_id}）對應的應徵紀錄，請先同步一次"))
             continue
         updates.append({"range": f"{status_col_letter}{row_i}", "values": [[new_status]]})
+        if updated_col_letter:
+            updates.append({"range": f"{updated_col_letter}{row_i}", "values": [[today_str]]})
+        if _write_recommend and recommender_col_letter:
+            updates.append({"range": f"{recommender_col_letter}{row_i}",
+                            "values": [[str(recommended_to)]]})
+        if _write_recommend and recommend_date_col_letter:
+            updates.append({"range": f"{recommend_date_col_letter}{row_i}",
+                            "values": [[today_str]]})
         ok_pairs.append((c, name))
 
     if updates:
@@ -4496,7 +4529,8 @@ def _render_results():
                                         _add_pending_sync(_job_name, _cand, "已推薦主管", "尚未設定試算表 ID")
                                 else:
                                     _ok_pairs, _fail_pairs = update_application_statuses_batch(
-                                        _status_sid, _job_name, _sel_candidates, "已推薦主管"
+                                        _status_sid, _job_name, _sel_candidates, "已推薦主管",
+                                        recommended_to=_recip_name,
                                     )
                                     for _fail_cand, _fail_msg in _fail_pairs:
                                         _add_pending_sync(_job_name, _fail_cand, "已推薦主管", _fail_msg)

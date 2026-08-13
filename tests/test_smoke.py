@@ -329,3 +329,71 @@ def test_本期報到人數要用實際報到日不是預計報到日():
     line = next(l for l in src.splitlines() if '"本期報到人數"' in l)
     assert 'onboarded_f' in line, f"本期報到人數吃錯清單了：{line.strip()}"
     assert 'actual_start_date' in src
+
+
+# ── 7. 待催辦天數（2026-08-12）──────────────────────────────────────
+
+def test_工作日計算不含週末():
+    import daily_health_check as hc
+    import datetime as _dt
+    # 2026-08-07 是週五，2026-08-12 是週三 → 中間工作日：10(一)11(二)12(三) = 3
+    assert hc._workdays_since('2026-08-07', _dt.date(2026, 8, 12)) == 3
+    # 週五 → 下週一 = 1 個工作日（週末不算）
+    assert hc._workdays_since('2026-08-07', _dt.date(2026, 8, 10)) == 1
+    # 同一天 = 0
+    assert hc._workdays_since('2026-08-12', _dt.date(2026, 8, 12)) == 0
+    # 未來日期、空值、爛格式都回 None，不能當成 0（0 會被當成「今天剛推薦」而漏催）
+    assert hc._workdays_since('2026-09-01', _dt.date(2026, 8, 12)) is None
+    assert hc._workdays_since('', _dt.date(2026, 8, 12)) is None
+    assert hc._workdays_since('不是日期', _dt.date(2026, 8, 12)) is None
+
+
+def test_待催辦以推薦日優先且無日期不誤報():
+    import daily_health_check as hc
+    import datetime as _dt
+    h = list(S3_COLS)
+
+    def mk(flow, rec_date='', upd_date='', rec='', name='測試'):
+        r = [''] * len(h)
+        r[h.index('流程狀態')] = flow
+        r[h.index('推薦日')] = rec_date
+        r[h.index('人才狀態更新日')] = upd_date
+        r[h.index('推薦主管')] = rec
+        r[h.index('姓名')] = name
+        r[h.index('職缺名稱')] = '某職缺'
+        return r
+
+    today = _dt.date(2026, 8, 12)
+
+    # 已推薦主管：推薦日優先（比人才狀態更新日更精準地代表「推薦發生在哪天」）
+    lines, n, no_date = hc.build_followup_lines(
+        [h, mk('已推薦主管', rec_date='2026-08-03', upd_date='2026-08-11', rec='設計部 許媚喬')], today)
+    assert n == 1 and '設計部 許媚喬' in lines[0]
+    assert '個工作日' in lines[0]
+
+    # 沒有任何日期 → 算進 no_date，不算逾期（不能憑空當成很久沒動）
+    lines, n, no_date = hc.build_followup_lines([h, mk('已推薦主管')], today)
+    assert (n, no_date) == (0, 1)
+
+    # 未達門檻不報（3 個工作日才算逾期）
+    lines, n, _ = hc.build_followup_lines([h, mk('已推薦主管', rec_date='2026-08-11')], today)
+    assert n == 0
+
+    # 不在規則裡的階段不管（初篩完成的 644 人不該每天被催）
+    lines, n, no_date = hc.build_followup_lines(
+        [h, mk('初篩完成', upd_date='2026-01-01')], today)
+    assert (n, no_date) == (0, 0)
+    lines, n, no_date = hc.build_followup_lines(
+        [h, mk('已結案', upd_date='2026-01-01')], today)
+    assert (n, no_date) == (0, 0)
+
+
+def test_寄信路徑會寫推薦主管與推薦日():
+    # 2026-08-12：寄推薦信那條路徑原本只寫「流程狀態」，而 dashboard 的 update_stage
+    # 會寫「人才狀態更新日」——兩條路徑做同一件事、缺的那條躲了幾個月，導致
+    # 「推薦後幾天沒回」完全算不出來。這條測試鎖住三個欄位都要寫。
+    import inspect
+    src = inspect.getsource(app.update_application_statuses_batch)
+    for col in ['人才狀態更新日', '推薦主管', '推薦日']:
+        assert col in src, f"寄信路徑沒有寫入「{col}」，待催辦會算不出來"
+    assert 'recommended_to' in src
