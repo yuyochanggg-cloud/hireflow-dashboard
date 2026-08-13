@@ -3,6 +3,11 @@ service_account.json
 gsheet_config.json
 gs_config.json
 *.json
+# 2026-08-13：email_config.json.bak-20260807（含明文 Gmail app password）曾經
+# 因為檔名不是「以 .json 結尾」而漏過上面的 *.json 規則被追蹤進 git。
+# 這條擋住所有 email_config.json 的變體備份檔，不管後面接什麼副檔名/時間戳。
+email_config.json*
+*.json.bak*
 
 # 個資相關
 推薦備份/
