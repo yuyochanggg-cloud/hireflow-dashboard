@@ -19,12 +19,8 @@ try:
 except ImportError:
     _GSPREAD_AVAILABLE = False
 import base64
-import smtplib
+import requests
 from io import BytesIO
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email import encoders
 
 try:
     from google import genai
@@ -1446,26 +1442,48 @@ def build_email_body(selected_candidates, job_name):
 
 
 def send_recommendation_email(to_email, body_text, selected_candidates, job_name):
-    """透過 Gmail SMTP 寄送推薦摘要信件，附上各候選人 PDF 履歷"""
-    config = load_email_config()
-    sender   = config.get('sender_email', '')
-    password = config.get('app_password', '')
-    if not sender or not password:
-        raise ValueError("email_config.json 尚未設定，請先在設定檔填入帳號與應用程式密碼。")
+    """透過 GAS 郵件轉發服務寄送推薦摘要信件，附上各候選人 PDF 履歷。
+
+    2026-08-13 從 Gmail SMTP（smtplib + app_password）改成呼叫一支獨立部署的
+    Google Apps Script Web App（見 outputs/scripts/lx-hireflow-mail-relay/）。
+
+    改的原因：
+    1. 使用者想改用良興公司信箱寄信，但公司 Workspace 帳號要不要開放應用程式
+       密碼並不確定，而且明文 SMTP 密碼本來就有外洩風險——這個專案的
+       email_config.json.bak-20260807 就曾經因為 .gitignore 規則沒對到檔名，
+       被誤上傳到 public GitHub repo（已修正，見 .gitignore 的
+       email_config.json* 規則）。
+    2. Apps Script 的 MailApp.sendEmail() 寄件者是「腳本綁定的 Google 帳號」，
+       不需要在本機存放任何密碼——跟既有的「會議標題自動校正機器人」用同一種
+       機制，寄件者自動就是 yunyu@ls3c.com.tw。
+    3. 良興 Workspace 網域政策預設會擋掉匿名呼叫網頁應用程式（測試時第一次
+       部署回應「找不到網頁」），要先把該 Apps Script 專案的 Google 雲端硬碟
+       共用設定從「限制」改成「知道連結的使用者」才放行——這一步是網域層級
+       設定，不是程式碼能繞過的，換部署或密鑰都不會影響它。
+
+    轉發服務本身有兩層防護：密鑰（防止網址被亂猜到就能寄信）＋收件人白名單
+    （即使密鑰外流也只能寄給這幾位既定收件人，不能拿來當任意寄信的跳板）。
+
+    relay_url / relay_secret 讀自 email_config.json，跟舊的 sender_email/
+    app_password 用同一個檔案、同一套 .gitignore 保護，但性質完全不同：
+    密鑰即使外流，最壞情況也只是有人能透過白名單寄信給既定的幾位主管，
+    不會像 SMTP 密碼外流那樣直接取得整個 Gmail 帳號的完整存取權。
+    """
+    config     = load_email_config()
+    relay_url  = config.get('relay_url', '')
+    relay_secret = config.get('relay_secret', '')
+    if not relay_url or not relay_secret:
+        raise ValueError(
+            "email_config.json 尚未設定 relay_url / relay_secret，"
+            "請先部署 outputs/scripts/lx-hireflow-mail-relay/ 並把網址與密鑰填入設定檔。"
+        )
 
     n        = len(selected_candidates)
     date_str = time.strftime('%Y/%m/%d')
     subject  = f"【初篩結果】{job_name} — 推薦候選人 {n} 位｜{date_str}"
 
-    # ── 組裝 MIME ────────────────────────────────────────────────
-    msg = MIMEMultipart()
-    msg['From']    = sender
-    msg['To']      = to_email
-    msg['Subject'] = subject
-    msg.attach(MIMEText(body_text, 'plain', 'utf-8'))
-
-    # ── 附件：各候選人 PDF ───────────────────────────────────────
-    attached = 0
+    # ── 附件：各候選人 PDF，轉成 base64 交給 GAS 端組裝 ─────────────
+    attachments, attached = [], 0
     for cand in selected_candidates:
         src_file  = str(cand.get('來源檔案', ''))
         code_val  = str(cand.get('104代碼', ''))
@@ -1477,28 +1495,31 @@ def send_recommendation_email(to_email, body_text, selected_candidates, job_name
             name_val = f"{name_val}_{_safe_src}"
         pdf_bytes, _ = extract_candidate_pdf(src_file, code_val)
         if pdf_bytes:
-            part = MIMEBase('application', 'pdf')
-            part.set_payload(pdf_bytes)
-            encoders.encode_base64(part)
-            # MIME encoded-word 編碼中文檔名，跨 email client 相容性最佳
-            _fname_raw = f'{name_val}.pdf'
-            _fname_enc = f"=?utf-8?b?{base64.b64encode(_fname_raw.encode('utf-8')).decode()}?="
-            part.add_header('Content-Disposition', f'attachment; filename="{_fname_enc}"')
-            part.add_header('Content-Type', f'application/pdf; name="{_fname_enc}"')
-            msg.attach(part)
+            attachments.append({
+                "filename": f"{name_val}.pdf",
+                "mimeType": "application/pdf",
+                "base64": base64.b64encode(pdf_bytes).decode('ascii'),
+            })
             attached += 1
 
-    # ── 寄出（優先 SSL/465，fallback STARTTLS/587）────────────────
-    smtp_server = config.get('smtp_server', 'smtp.gmail.com')
+    payload = {
+        "secret": relay_secret,
+        "to": to_email,
+        "subject": subject,
+        "body": body_text,
+        # 使用者要求：主管信箱寄出的同時，自己信箱留一份底，不用像以前那樣
+        # 先寄給自己再手動轉出去（那樣「推薦主管」欄位永遠記成寄件人自己，
+        # 見 2026-08-12 待催辦功能的資料修正）。
+        "cc": config.get('self_cc_email', ''),
+        "attachments": attachments,
+    }
     try:
-        with smtplib.SMTP_SSL(smtp_server, 465) as server:
-            server.login(sender, password)
-            server.send_message(msg)
-    except Exception:
-        with smtplib.SMTP(smtp_server, 587) as server:
-            server.starttls()
-            server.login(sender, password)
-            server.send_message(msg)
+        resp = requests.post(relay_url, json=payload, timeout=30)
+        result = resp.json()
+    except Exception as e:
+        raise ValueError(f"郵件轉發服務連線失敗：{type(e).__name__} {e}")
+    if not result.get('ok'):
+        raise ValueError(f"郵件轉發服務回報寄信失敗：{result.get('error', '未知錯誤')}")
 
     return attached
 

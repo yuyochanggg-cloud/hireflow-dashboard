@@ -397,3 +397,31 @@ def test_寄信路徑會寫推薦主管與推薦日():
     for col in ['人才狀態更新日', '推薦主管', '推薦日']:
         assert col in src, f"寄信路徑沒有寫入「{col}」，待催辦會算不出來"
     assert 'recommended_to' in src
+
+
+# ── 8. 推薦信改走 GAS 郵件轉發（2026-08-13）──────────────────────────
+
+def test_推薦信不再依賴smtp帳密():
+    # 2026-08-13：從 smtplib+app_password 改成呼叫 GAS Web App，因為
+    # (1) 明文 SMTP 密碼有外洩風險（本專案就真的中過一次，見 .gitignore 的
+    #     email_config.json* 規則），(2) 使用者想用公司信箱寄信但良興
+    # Workspace 是否開放應用程式密碼不確定，GAS 端用 MailApp 不需要密碼。
+    # 檢查真正的呼叫（不是字面文字）——函式的 docstring 本身會提到
+    # smtplib（解釋改動歷史），字串比對會被自己的說明文字誤判。
+    assert not hasattr(app, 'smtplib'), "app.py 不該再 import smtplib"
+    import inspect
+    src = inspect.getsource(app.send_recommendation_email)
+    assert 'smtplib.SMTP' not in src, "推薦信不該再依賴 SMTP 帳密"
+    assert 'relay_url' in src and 'relay_secret' in src
+    assert 'requests.post' in src
+
+
+def test_推薦信會帶密鑰白名單與附件base64():
+    # 鎖住轉發服務的請求格式：少了任何一個欄位，GAS 端的驗證/白名單/附件
+    # 邏輯就會對不上（見 outputs/scripts/lx-hireflow-mail-relay/Code.gs）。
+    import inspect
+    src = inspect.getsource(app.send_recommendation_email)
+    for key in ['"secret"', '"to"', '"subject"', '"body"', '"cc"', '"attachments"']:
+        assert key in src, f"payload 缺少 {key}，GAS 端會收不到或驗證失敗"
+    assert 'base64.b64encode' in src
+    assert "result.get('ok')" in src, "沒檢查 GAS 回應的 ok 欄位，寄信失敗會被當成成功"
