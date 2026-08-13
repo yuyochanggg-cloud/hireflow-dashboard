@@ -1513,11 +1513,34 @@ def send_recommendation_email(to_email, body_text, selected_candidates, job_name
         "cc": config.get('self_cc_email', ''),
         "attachments": attachments,
     }
+    # 2026-08-13 實測發現：Apps Script 是先真正執行 doPost（信已經寄出去了）
+    # 才把執行結果回傳給呼叫端；「取得確認回應」這一步偶爾會斷線／逾時／回傳
+    # 非預期內容，但那不代表信沒寄出——連續測試 18 封裡，被判定「失敗」的
+    # 幾封事後全部在信箱裡找到了。因此這裡刻意分兩種錯誤，不能混為一談：
+    #   (a) 連線例外／回應不是合法 JSON → 無法確認，很可能已經寄出，
+    #       絕對不能自動重試（重試 = 對 Google 發一次新的 POST = 再寄一封
+    #       重複的信給主管），只能誠實告知使用者自己去信箱確認。
+    #   (b) 拿到合法 JSON 但 ok=false（密鑰錯誤／收件人不在白名單／附件
+    #       解碼失敗／MailApp 本身丟例外）→ 這是 GAS 端明確判斷沒有寄出，
+    #       才是真正安全可以重試的失敗。
     try:
         resp = requests.post(relay_url, json=payload, timeout=30)
-        result = resp.json()
     except Exception as e:
-        raise ValueError(f"郵件轉發服務連線失敗：{type(e).__name__} {e}")
+        raise ValueError(
+            f"⚠️ 無法確認是否寄出（連線例外：{type(e).__name__}）。"
+            f"Google 端通常已經執行完寄信，只是確認回應沒送達——"
+            f"請先檢查 {to_email} 或 {config.get('self_cc_email') or '你自己'} 的信箱，"
+            f"確認收到後才視為完成，不要直接再按一次「寄出」以免主管收到重複信件。"
+        )
+    try:
+        result = resp.json()
+    except Exception:
+        raise ValueError(
+            f"⚠️ 收到非預期回應（HTTP {resp.status_code}），無法確認是否寄出。"
+            f"信通常已經寄出，只是確認回應失敗——"
+            f"請先檢查 {to_email} 或 {config.get('self_cc_email') or '你自己'} 的信箱，"
+            f"確認收到後才視為完成，不要直接再按一次「寄出」以免主管收到重複信件。"
+        )
     if not result.get('ok'):
         raise ValueError(f"郵件轉發服務回報寄信失敗：{result.get('error', '未知錯誤')}")
 

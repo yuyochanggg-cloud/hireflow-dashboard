@@ -17,6 +17,7 @@ from hr_schema import (
 )
 import app  # module-level 有 st.set_page_config，bare mode 下是 no-op
 import dashboard as dashboard_module  # 同上；只用來對原始碼做語意斷言
+import daily_health_check  # 同上
 
 
 # ── 1. Schema 契約（守 2026-07-09 的 13欄/19欄錯位 bug）─────────────
@@ -425,3 +426,45 @@ def test_推薦信會帶密鑰白名單與附件base64():
         assert key in src, f"payload 缺少 {key}，GAS 端會收不到或驗證失敗"
     assert 'base64.b64encode' in src
     assert "result.get('ok')" in src, "沒檢查 GAS 回應的 ok 欄位，寄信失敗會被當成成功"
+
+
+def test_推薦信連線異常不能自動重試():
+    # 2026-08-13 實測發現：Apps Script 先真正執行 doPost（信已經寄出）才回應，
+    # 「取得確認回應」這一步斷線不代表沒寄出。連續測試 18 封裡，被判定「失敗」
+    # 的幾封事後全部在信箱裡找到。若連線例外時自動重試 = 對 Google 發一次新
+    # 的 POST = 讓 MailApp 再執行一次 = 主管收到重複的推薦信，比不確定更糟。
+    import inspect
+    src = inspect.getsource(app.send_recommendation_email)
+    assert 'for ' not in src.split('try:')[1].split('except Exception as e:')[0], \
+        "連線例外的處理段落裡不該有重試迴圈"
+    # 連線例外訊息必須明確提示「可能已寄出」、告知去信箱確認，不能講成單純失敗，
+    # 否則使用者會誤判成「什麼都沒發生」而重按寄出鍵。
+    assert '無法確認是否寄出' in src
+    assert '不要直接再按一次「寄出」' in src
+    # 兩種錯誤要分開：GAS 明確回報 ok=false 才是真正的失敗，跟連線/解析例外
+    # 的措辭必須不同，否則使用者沒辦法判斷該不該重按。
+    assert '確定沒有寄出' not in src.split('無法確認是否寄出')[0]
+
+
+# ── 9. 健檢通知信改走 GAS 郵件轉發（2026-08-13）───────────────────────
+
+def test_健檢信不再依賴smtp帳密():
+    # 跟推薦信同一天、同一個理由改掉：原本用的 Gmail 應用程式密碼已被使用者
+    # 撤銷（見 app.py 那次改動），這支腳本原封不動的話會寄信失敗。
+    assert not hasattr(daily_health_check, 'smtplib'), \
+        "daily_health_check.py 不該再 import smtplib"
+    import inspect
+    src = inspect.getsource(daily_health_check.send_report_email)
+    assert 'smtplib.SMTP' not in src
+    assert 'relay_url' in src and 'relay_secret' in src
+    assert 'requests.post' in src
+    assert "result.get('ok')" in src, "沒檢查轉發服務的 ok 欄位，寄信失敗會被當成成功"
+
+
+def test_健檢信連線異常訊息與真正失敗不同():
+    # 同上一條理由：健檢信雖然收件人是自己、風險較低，但措辭仍要區分
+    # 「無法確認」跟「確定沒寄出」，維持跟推薦信一致的判斷方式。
+    import inspect
+    src = inspect.getsource(daily_health_check.send_report_email)
+    assert '無法確認健檢報告是否寄出' in src
+    assert '確定沒有寄出' in src

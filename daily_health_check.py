@@ -13,12 +13,10 @@ import argparse
 import glob
 import json
 import os
-import smtplib
 import datetime
 import sys
 import time
 from collections import Counter
-from email.mime.text import MIMEText
 
 import gspread
 from google.auth import default as google_auth_default
@@ -610,55 +608,51 @@ def send_report_email(report, has_issues, followup_n=0):
     原本擔心的「每天都寄會被忽略」用**主旨列**解決：正常是「✅ 一切正常」、有問題是
     「⚠️ 發現 N 個問題」，掃一眼主旨就知道要不要開。可以在 Gmail 設篩選器把 ✅ 的
     自動封存，只讓 ⚠️ 的留在收件匣。
+
+    2026-08-13 從 SMTP（smtplib + app_password）改成呼叫跟 app.py 推薦信同一個
+    GAS 郵件轉發服務。原本用的那組 Gmail 應用程式密碼已經在同一天因為明文外洩
+    風險被使用者撤銷（見 app.py 那次改動），這支腳本原封不動的話明天早上就會
+    寄信失敗。改用轉發服務後，這個專案不再有任何一處存放明文密碼。
     """
     config = load_email_config()
-    sender = config.get('sender_email', '')
-    password = config.get('app_password', '')
-    if not sender or not password:
-        print('（--email 已指定，但 email_config.json 沒有 sender_email/app_password，跳過寄信）')
+    relay_url = config.get('relay_url', '')
+    relay_secret = config.get('relay_secret', '')
+    if not relay_url or not relay_secret:
+        print('（--email 已指定，但 email_config.json 沒有 relay_url/relay_secret，跳過寄信）')
         return
-    smtp_server = config.get('smtp_server', 'smtp.gmail.com')
 
-    # 2026-08-07 實測：這個網路環境 **只有 465 通，587 和 25 都被擋**（連線逾時）。
-    # email_config.json 裡寫的是 587，而 app.py 的 send_recommendation_email 之所以
-    # 一直能正常寄推薦信，是因為它寫死 465、根本沒讀 config 的 port——同一件事兩條
-    # 路徑做法不一致，而剛好正確的那條是靠寫死。這裡對齊那條已驗證可行的做法：
-    # 465 SSL 優先，config 的值只當備援，避免又被一個錯的設定值擋掉整條通知路徑。
-    ports = [465]
-    cfg_port = int(config.get('smtp_port', 465))
-    if cfg_port != 465:
-        ports.append(cfg_port)
-
-    msg = MIMEText(report, 'plain', 'utf-8')
-    msg['From'] = sender
-    msg['To'] = ADMIN_EMAIL
-    # 主旨自己帶訊號：掃一眼就知道要不要開，不用點進去看內文
     _today = time.strftime('%m/%d')
     _state = (f"⚠️ HireFlow 健檢發現問題（{_today}）" if has_issues
               else f"✅ HireFlow 健檢正常（{_today}）")
     # 待催辦數放進主旨：Opus 2026-08-12 的建議——每天都寄綠燈信有習慣化風險，
     # 主旨要能 0.5 秒掃完並讓需要行動的日子在視覺上跳出來。
-    msg['Subject'] = f"{_state}｜待催辦 {followup_n}" if followup_n else _state
+    subject = f"{_state}｜待催辦 {followup_n}" if followup_n else _state
 
-    last_err = None
-    for port in ports:
-        try:
-            if port == 465:
-                with smtplib.SMTP_SSL(smtp_server, port, timeout=30) as server:
-                    server.login(sender, password)
-                    server.send_message(msg)
-            else:
-                with smtplib.SMTP(smtp_server, port, timeout=30) as server:
-                    server.starttls()
-                    server.login(sender, password)
-                    server.send_message(msg)
-            break
-        except Exception as e:
-            last_err = e
-            continue
-    else:
-        # 全部 port 都失敗：明講出來，不要靜靜地什麼都沒發生
-        print(f'（⚠️ 健檢報告寄送失敗，所有 SMTP port 都不通：{type(last_err).__name__}: {last_err}）')
+    # 2026-08-13 實測：Apps Script 是先真正執行 doPost（信已經寄出去了）才把
+    # 執行結果回傳給呼叫端；「取得確認回應」這一步偶爾會斷線/逾時/回傳非預期
+    # 內容，但信通常已經寄出——連續測試 18 封裡，被判定「失敗」的幾封事後全
+    # 部在信箱裡找到了。這裡不重試（重試 = 再寄一封重複的健檢信），單純把
+    # 「無法確認」跟「真的沒寄」的訊息分開印，讓使用者不會誤判連寄信服務也壞了。
+    import requests
+    try:
+        resp = requests.post(relay_url, json={
+            "secret": relay_secret,
+            "to": ADMIN_EMAIL,
+            "subject": subject,
+            "body": report,
+        }, timeout=30)
+    except Exception as e:
+        print(f'（⚠️ 無法確認健檢報告是否寄出，連線例外：{type(e).__name__}: {e}｜'
+              f'Google 端通常已經執行完寄信，只是確認回應沒送達，不代表真的沒寄到）')
+        return
+    try:
+        result = resp.json()
+    except Exception:
+        print(f'（⚠️ 無法確認健檢報告是否寄出，收到非預期回應 HTTP {resp.status_code}｜'
+              f'信通常已經寄出，只是確認回應失敗）')
+        return
+    if not result.get('ok'):
+        print(f"（⚠️ 健檢報告確定沒有寄出，郵件轉發服務回報：{result.get('error', '未知錯誤')}）")
         return
     print(f"（已寄出健檢報告給：{ADMIN_EMAIL}）")
 
