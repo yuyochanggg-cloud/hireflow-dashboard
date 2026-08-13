@@ -468,3 +468,83 @@ def test_健檢信連線異常訊息與真正失敗不同():
     src = inspect.getsource(daily_health_check.send_report_email)
     assert '無法確認健檢報告是否寄出' in src
     assert '確定沒有寄出' in src
+
+
+# ── 10. 分析報表小樣本警語與新表（2026-08-13）────────────────────────
+
+def test_分析報表小樣本圖表都有警語():
+    import inspect
+    src = inspect.getsource(dashboard_module.page_analytics)
+    assert '不要照百分比推論轉換率高低' in src, '漏斗缺少小樣本警語'
+    assert '不代表長期來源比例' in src, '來源圓餅圖缺少小樣本警語'
+    assert '解讀「成長/下滑」前先看實際人數' in src, '月趨勢圖缺少小樣本警語'
+    assert '不代表評等準確' in src, '等第分布圖缺少小樣本警語'
+
+
+def test_開缺存量表管道人數排除初篩中與已報到():
+    # 2026-08-13 實跑抓到的真bug：管道人數一開始把還卡在「初篩完成」（AI判
+    # 不合格、HR從沒處理過）的人也算進去，導致單一職缺算出158人，但看板上
+    # 同一個職缺實際只有7人在跑流程。跟 page_overview 拿掉「在途候選人」
+    # 指標是同一個理由：screening 階段大量是沒人會再處理的人，算進去的數字
+    # 大卻沒有行動意義。改成塞真資料驗證行為，不是比對字串——字串比對法
+    # 在同一次修正裡就因為關鍵字重複出現而誤判過兩次，也完全抓不到下面
+    # 那個回應天數算錯的邏輯bug，只有真正跑一次計算才驗證得到。
+    jobs = [{"id": "J1", "title": "職缺一", "status": "open", "created_at": "2026-07-01"}]
+    hires = [{"candidate_id": "CAND-onboarded", "actual_start_date": "2026-08-01"}]
+    cands = [
+        {"job_opening_id": "J1", "stage": "screening", "candidate_id": "C1"},   # 初篩中，該被排除
+        {"job_opening_id": "J1", "stage": "rejected",  "candidate_id": "C2"},   # 已結案，該被排除
+        {"job_opening_id": "J1", "stage": "hired", "candidate_id": "CAND-onboarded"},  # 已報到，該被排除
+        {"job_opening_id": "J1", "stage": "recommended", "candidate_id": "C4"},  # 在途，該被算進去
+    ]
+    rows = dashboard_module._job_pipeline_inventory(cands, jobs, hires)
+    assert len(rows) == 1
+    assert rows[0]["管道人數"] == 1, f"應該只有1人在途，實際算出{rows[0]['管道人數']}"
+    assert rows[0]["缺口"] is False
+
+
+def test_開缺存量表正確標出0人缺口():
+    jobs = [{"id": "J1", "title": "沒人應徵的職缺", "status": "open", "created_at": "2026-07-01"},
+            {"id": "J2", "title": "已結束的職缺", "status": "closed", "created_at": "2026-07-01"}]
+    rows = dashboard_module._job_pipeline_inventory([], jobs, [])
+    assert len(rows) == 1, "已結束（非open）的職缺不該出現在存量表"
+    assert rows[0]["缺口"] is True
+
+
+def test_主管回應天數算的是推薦到回應而不是回應到今天():
+    # 2026-08-13 實測抓到的真bug：第一版把 workdays_since 的第二個參數傳成
+    # 「今天」，算出來的其實是「這筆多久沒動」（跟卡片老化天數同一件事），
+    # 不是「主管花幾天回應」——回應很快但之後很久沒再往下走的人，會被誤判
+    # 成回應很慢。用固定日期的合成資料驗證：如果沒修好，這個測試算出來的
+    # 天數會隨著「今天」變動，不會是固定值。
+    cands = [
+        {"recommended_to": "主管A", "recommended_at": "2026-08-03",
+         "flow_status": "已傳邀約", "stage_updated_at": "2026-08-05"},  # 推薦→回應：2工作日
+        {"recommended_to": "主管A", "recommended_at": "2026-08-01",
+         "flow_status": "已推薦主管", "stage_updated_at": "2026-08-01"},  # 還沒回應
+    ]
+    rows, n_recommended = dashboard_module._manager_response_stats(cands)
+    assert n_recommended == 2
+    row = next(r for r in rows if r["主管"] == "主管A")
+    assert row["被推薦人數"] == 2
+    assert row["已回應人數"] == 1
+    assert row["平均回應天數（工作日）"] == 2, (
+        f"應該是推薦日(08-03)到回應日(08-05)的2個工作日，算出{row['平均回應天數（工作日）']}——"
+        "如果這裡等於「今天到08-05」的天數，代表退回成算錯的版本了"
+    )
+
+
+def test_主管回應表未回應者不進分母():
+    cands = [{"recommended_to": "主管B", "recommended_at": "2026-08-01",
+              "flow_status": "已推薦主管", "stage_updated_at": "2026-08-01"}]
+    rows, _ = dashboard_module._manager_response_stats(cands)
+    row = next(r for r in rows if r["主管"] == "主管B")
+    assert row["已回應人數"] == 0
+    assert row["平均回應天數（工作日）"] is None, "沒人回應時平均天數不該算成0，會被誤讀成回應很快"
+
+
+def test_fetch_all_jobs補上建立日期():
+    import inspect
+    src = inspect.getsource(app.__dict__.get('fetch_all_jobs', lambda: None)) if False else \
+          inspect.getsource(dashboard_module.fetch_all_jobs)
+    assert '建立日期' in src, '開缺存量表要算開缺天數，缺了這欄就算不出來'

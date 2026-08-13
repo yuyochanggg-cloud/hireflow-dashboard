@@ -551,6 +551,8 @@ def fetch_all_jobs() -> list:
             "department": row.get("工作地點", ""),
             "headcount":  1,
             "status":     _STATUS_MAP.get(row.get("狀態", ""), "open"),
+            # 2026-08-13：開缺存量表要算「開了幾天」，補上原本沒映射的建立日期
+            "created_at": row.get("建立日期", ""),
         })
     return result
 
@@ -2520,6 +2522,76 @@ def page_onboarding():
 # ══════════════════════════════════════════════════════════════
 # PAGE 6 — 分析報表
 # ══════════════════════════════════════════════════════════════
+def _manager_response_stats(all_cands):
+    """各主管：被推薦人數／已回應人數／平均回應天數（工作日）。
+
+    2026-08-13 新增，抽成獨立函式方便測試——inline 在 page_analytics 裡時
+    曾經真的算錯過一次：回應天數誤傳成「回應日→今天」，變成跟老化天數
+    算同一件事，不是「主管花了幾天回應」，這種邏輯錯誤只靠字串比對測試
+    抓不到，要能真正塞資料進去跑過一次才能守住。
+
+    回應天數＝推薦日（recommended_at）→ 離開「已推薦主管」那一刻
+    （stage_updated_at）的工作日數，不是到今天為止的天數——回應快但之後
+    很久沒再往下走的人，不該被算成回應很慢。
+    """
+    _recommended = [c for c in all_cands if c.get("recommended_to")]
+    _mgr_stats = {}
+    for c in _recommended:
+        mgr = c.get("recommended_to") or "(未填)"
+        row = _mgr_stats.setdefault(mgr, {"推薦": 0, "回應": 0, "天數合計": 0})
+        row["推薦"] += 1
+        if c.get("flow_status") != "已推薦主管":
+            _respond_dt = parse_dt(c.get("stage_updated_at"))
+            if c.get("recommended_at") and _respond_dt:
+                days = hr_schema.workdays_since(c.get("recommended_at"), _respond_dt.date())
+                if days is not None:
+                    row["回應"] += 1
+                    row["天數合計"] += days
+    rows = []
+    for mgr, s in sorted(_mgr_stats.items(), key=lambda x: -x[1]["推薦"]):
+        avg_days = round(s["天數合計"] / s["回應"], 1) if s["回應"] else None
+        rows.append({
+            "主管": mgr, "被推薦人數": s["推薦"], "已回應人數": s["回應"],
+            "平均回應天數（工作日）": avg_days,
+        })
+    return rows, len(_recommended)
+
+
+def _job_pipeline_inventory(all_cands, all_jobs, all_hires):
+    """各開缺：開缺天數／管道人數，並標出管道 0 人的職缺。
+
+    2026-08-13 新增，同樣抽成獨立函式方便測試——inline 版本第一次跑出來時
+    「管道人數」把還卡在 screening（AI判不合格、HR從沒處理過）的人也算
+    進去，單一職缺算出158人，但看板上同一個職缺實際只有7人在跑流程。
+    """
+    _reported_cids = {h.get("candidate_id") for h in all_hires if h.get("actual_start_date")}
+    _pipeline_by_job = {}
+    for c in all_cands:
+        # 只算「已離開初篩」的人——跟 page_overview 拿掉「在途候選人」指標
+        # 是同一個理由：stage=="screening" 大量是沒人會再處理的人。
+        if c.get("stage") in ("screening", "rejected"):
+            continue
+        # 已報到的人是完成的結果，不是還在跑的流程，跟看板頁用同一個定義。
+        if c.get("stage") == "hired" and str(c.get("candidate_id")) in _reported_cids:
+            continue
+        jid = c.get("job_opening_id", "")
+        _pipeline_by_job[jid] = _pipeline_by_job.get(jid, 0) + 1
+
+    rows = []
+    for j in all_jobs:
+        if j.get("status") != "open":
+            continue
+        jdt = parse_dt(j.get("created_at"))
+        open_days = (date.today() - jdt.date()).days if jdt else None
+        n_pipeline = _pipeline_by_job.get(j["id"], 0)
+        rows.append({
+            "職缺": j.get("title", "") or j["id"], "開缺天數": open_days,
+            "管道人數": n_pipeline, "缺口": n_pipeline == 0,
+        })
+    rows.sort(key=lambda r: (r["管道人數"], -(r["開缺天數"] or 0)))
+    return rows
+
+
 def page_analytics():
     if not HAS_PLOTLY:
         st.warning("請安裝 plotly：`pip install plotly`")
@@ -2528,6 +2600,7 @@ def page_analytics():
     all_cands = fetch_all_candidates()
     all_ivs   = fetch_all_interviews()
     all_hires = fetch_all_hires()
+    all_jobs  = fetch_all_jobs()
 
     # 時間範圍選擇
     today = date.today()
@@ -2661,6 +2734,13 @@ def page_analytics():
         st.caption("母體＝**本期新進**的候選人，往後追他們最終走到哪一步。"
                    "區間選得短時後段會偏低（這個月剛進來的人還沒輪到面試），"
                    "**不是漏算**；要看「本期實際做了幾場」請看上面的 KPI。")
+        # 2026-08-13：不砍圖，改加警語——面試/已通知這幾格常常個位數，一個人
+        # 變動就能讓百分比跳一大塊（例如1人變2人＝+100%），百分比看起來精確
+        # 但其實在這種樣本量下沒有統計意義，只看圖上的百分比容易誤判趨勢。
+        _nonzero_counts = [c for c in funnel_counts if c > 0]
+        if _nonzero_counts and min(_nonzero_counts) < 10:
+            st.caption("⚠️ 後段階段人數常是個位數，圖上的百分比一個人變動就會跳一大塊，"
+                       "請以「人數」判斷，不要照百分比推論轉換率高低。")
         fig_funnel = go.Figure(go.Funnel(
             y=funnel_labels, x=funnel_counts,
             textinfo="value+percent initial",
@@ -2692,6 +2772,14 @@ def page_analytics():
     with ch2:
         st.subheader("🔍 候選人來源")
         if cands_f:
+            # 2026-08-13：不砍圖，改加警語——區間拉到七月中以前，「來源」選單
+            # 那時還沒固定填，會出現一大塊「未指定」；那不是漏填，是那段時間
+            # 本來就沒有記錄來源，跟其他來源類別放在同一張圓餅圖裡容易被誤讀
+            # 成「主要來源不明」。另外總筆數不多時，一塊佔大部分也不代表
+            # 真的只有那個管道，可能只是這段時間剛好都是同一類職缺在收履歷。
+            if len(cands_f) < 30:
+                st.caption(f"⚠️ 本區間只有 {len(cands_f)} 筆，佔比容易被單一批次影響"
+                           "（例如同時段只收某類職缺），不代表長期來源比例。")
             src_df = pd.Series([c.get("source", "其他") or "其他" for c in cands_f]).value_counts()
             fig_src = px.pie(values=src_df.values, names=src_df.index,
                              color_discrete_sequence=px.colors.qualitative.Set3)
@@ -2706,6 +2794,11 @@ def page_analytics():
     # ── 每月新增候選人趨勢 ────────────────────────────────────
     with ch3:
         st.subheader("📈 每月新增候選人（最近6個月）")
+        # 2026-08-13：不砍圖，改加警語——每月人數常是個位數到十幾人，柱狀圖上
+        # 看起來的「大幅成長/下滑」可能只是1、2個人的差距（例如0→2人視覺上
+        # 是從無到有，但實際只是2個人），提醒不要照曲線形狀推論招募動能變化。
+        st.caption("⚠️ 月人數常是個位數，柱狀高低差可能只是1、2人，"
+                   "解讀「成長/下滑」前先看實際人數。")
         # 這張圖的目的就是看趨勢，固定看最近6個月，不跟著上面的「統計區間」
         # 選單走——選「本月」的話這張圖只會剩1個月的資料，完全看不出趨勢。
         # 用all_cands（不是cands_f）當資料源，月份範圍自己算，沒人的月份補0，
@@ -2739,6 +2832,11 @@ def page_analytics():
     with ch4:
         st.subheader("🏆 AI 評等分布")
         if cands_f:
+            # 2026-08-13：不砍圖，改加警語——這張圖只顯示 AI 給了多少 A/B/C，
+            # 不代表等第準不準。等第有沒有預測力要看下面的「AI 等第 vs 後續
+            # 結果」交叉分析，那裡才是能不能信任這個等第的答案。
+            st.caption("這張只顯示 AI 評等的分布，不代表評等準確——"
+                       "評等跟結果的關聯請看下方交叉分析。")
             grade_df = pd.Series([c.get("grade", "?") or "?" for c in cands_f]).value_counts()
             color_map = {"A": "#f59e0b", "B": "#3b82f6", "C": "#94a3b8"}
             colors = [color_map.get(g, "#e2e8f0") for g in grade_df.index]
@@ -2797,6 +2895,63 @@ def page_analytics():
         gm = GRADE_META.get(g, ("", "", "", ""))
         st.write(f"{gm[3]} {g} 等第：{hired_g} / {total_g} = {rate:.0f}%")
         st.progress(min(rate / 100, 1.0))
+
+    # ── 主管回應時間表 ────────────────────────────────────────
+    # 2026-08-13 新增。HR推薦46→主管推進21，55%的流失卡在主管端，是整條漏斗
+    # 最大的單一斷點——這張表就是把它變成看得到、能拿去跟主管溝通的數字。
+    # 用全部歷史（不跟上面的統計區間走），因為樣本本來就少，拆更短的區間
+    # 只會更沒意義。
+    #
+    # 資料限制：「推薦主管」「推薦日」是 2026-08-13 才補上寫入路徑，之前的
+    # 推薦記錄這兩欄是空的，不會被算進這張表——樣本量會隨時間才慢慢累積。
+    # 「回應天數」用「人才狀態更新日」當回應時間點的近似值：如果這個人推薦後
+    # 只被動過一次（推薦→下一步），這個日期就是真正的回應日；如果後來又動過
+    # 幾次（例如又推進到已面試），這個日期會晚於真正回應的那一刻，天數因此
+    # 是「最多不會少於」的近似值，不是精確值——樣本還小，先看得到有沒有卡住
+    # 比抓到精確天數更重要。
+    st.markdown("---")
+    st.markdown(
+        '<div style="font-weight:700;font-size:var(--fs-sm);color:var(--p);'
+        'text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">'
+        '👔 主管回應時間表</div>',
+        unsafe_allow_html=True,
+    )
+    _mgr_rows, _n_recommended = _manager_response_stats(all_cands)
+    if not _mgr_rows:
+        st.info("目前沒有帶「推薦主管」記錄的資料——這欄是 2026-08-13 才開始寫入，"
+                "累積幾週後這裡才會有東西可看。")
+    else:
+        if _n_recommended < 20:
+            st.caption(f"⚠️ 目前只有 {_n_recommended} 筆帶推薦記錄，樣本還小，"
+                       "數字僅供參考、不要拿來對主管下結論。")
+        _mgr_df = pd.DataFrame(_mgr_rows)
+        _mgr_df["平均回應天數（工作日）"] = _mgr_df["平均回應天數（工作日）"].apply(
+            lambda v: v if v is not None else "—")
+        st.dataframe(_mgr_df, use_container_width=True, hide_index=True)
+
+    # ── 開缺存量表 ────────────────────────────────────────────
+    # 2026-08-13 新增。0人的缺是供給問題（沒人應徵/沒人被篩進來），跟「有人
+    # 卡在流程裡」是完全不同的問題、需要不同的動作——這張表刻意把兩者分開看。
+    st.markdown("---")
+    st.markdown(
+        '<div style="font-weight:700;font-size:var(--fs-sm);color:var(--p);'
+        'text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">'
+        '📋 開缺存量表</div>',
+        unsafe_allow_html=True,
+    )
+    _job_rows = _job_pipeline_inventory(all_cands, all_jobs, all_hires)
+    if not _job_rows:
+        st.info("目前沒有標記為「招募中」的職缺。")
+    else:
+        _n_zero = sum(1 for r in _job_rows if r["缺口"])
+        if _n_zero:
+            st.warning(f"⚠️ {_n_zero} 個開缺目前管道裡完全沒有人——這是供給不足，"
+                       "不是流程卡住，補人／催辦解決不了，需要重新開拓來源或調整條件。")
+        _job_df = pd.DataFrame(_job_rows)
+        _job_df["狀態"] = _job_df["缺口"].apply(lambda z: "⚠️ 0人，供給問題" if z else "")
+        _job_df["開缺天數"] = _job_df["開缺天數"].apply(lambda v: v if v is not None else "—")
+        _job_df = _job_df.drop(columns=["缺口"])
+        st.dataframe(_job_df, use_container_width=True, hide_index=True)
 
     # ── 匯出 Excel ────────────────────────────────────────────
     st.markdown("---")
