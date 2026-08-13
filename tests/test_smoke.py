@@ -65,6 +65,13 @@ class FakeWS:
     def append_rows(self, rows, value_input_option=None, insert_data_option=None):
         self.appended = rows
 
+    def batch_update(self, updates, value_input_option=None):
+        # update_application_statuses_batch 用的是 {"range": "H5", "values": [[v]]}
+        # 這種格式，跟 _upsert_rows 用的 gspread.Cell 物件不同，FakeWS 兩種呼叫
+        # 方式都要能接住，否則實際會用哪個方法完全要看被測函式，測試等於沒測到。
+        self.batch_updates = getattr(self, "batch_updates", [])
+        self.batch_updates.extend(updates)
+
 
 def test_更新既有列時不覆蓋HR手填欄位():
     header = list(S3_COLS)
@@ -548,3 +555,55 @@ def test_fetch_all_jobs補上建立日期():
     src = inspect.getsource(app.__dict__.get('fetch_all_jobs', lambda: None)) if False else \
           inspect.getsource(dashboard_module.fetch_all_jobs)
     assert '建立日期' in src, '開缺存量表要算開缺天數，缺了這欄就算不出來'
+
+
+# ── 11. update_application_statuses_batch 實際執行（守 2026-08-13 的
+#        datetime.now() AttributeError bug）──────────────────────────
+
+class FakeSheet:
+    """假 spreadsheet client：只回應 worksheet() 拿到 FakeWS，不碰網路。"""
+    def __init__(self, ws):
+        self._ws = ws
+
+    def worksheet(self, name):
+        return self._ws
+
+
+def test_推薦寄信路徑實際執行不會拋例外():
+    # 2026-08-13 實際發生的 bug：app.py import 的是 datetime 模組本身
+    # （`import datetime`，不是 `from datetime import datetime`），但這個
+    # 函式裡寫了 `datetime.now()` —— 模組沒有 now() 這個屬性，一寄信就炸
+    # AttributeError。前一版的測試只用 inspect.getsource 比對欄位名稱字串，
+    # 完全沒有真正呼叫過這個函式，所以這種一執行就炸的錯誤完全沒被抓到——
+    # 跟同一天在 dashboard.py 抓到的兩個計算bug是同一個教訓：字串比對
+    # 測不出真正的執行行為，只有實際跑過一次才算數。
+    header = list(S3_COLS)
+    row = ["APP-1-職缺A"] + [""] * (len(header) - 1)
+    row[header.index("流程狀態")] = "初篩完成"
+    ws = FakeWS(header, [row])
+    fake_sh = FakeSheet(ws)
+
+    import unittest.mock as mock
+    with mock.patch.object(app, "_get_gsheet_client", return_value=fake_sh):
+        ok_pairs, fail_pairs = app.update_application_statuses_batch(
+            "fake-sheet-id", "職缺A",
+            [{"104代碼": "1", "真實姓名": "測試"}], "已推薦主管",
+            recommended_to="設計部 許媚喬",
+        )
+    assert not fail_pairs, f"應該成功，但回報失敗：{fail_pairs}"
+    assert len(ok_pairs) == 1
+    # 確認「推薦主管」「推薦日」「人才狀態更新日」三欄真的被寫入了。
+    # batch_update 的 range 是 "H2" 這種欄字母+列號格式，用欄字母比對。
+    import re as _re
+    import gspread
+    written_by_col_letter = {}
+    for u in ws.batch_updates:
+        m = _re.match(r"^([A-Z]+)\d+$", u["range"])
+        written_by_col_letter[m.group(1)] = u["values"][0][0]
+
+    def _col_letter(name):
+        return gspread.utils.rowcol_to_a1(1, header.index(name) + 1).rstrip("0123456789")
+
+    assert written_by_col_letter.get(_col_letter("推薦主管")) == "設計部 許媚喬"
+    assert written_by_col_letter.get(_col_letter("推薦日")), "推薦日沒有被寫入"
+    assert written_by_col_letter.get(_col_letter("人才狀態更新日")), "人才狀態更新日沒有被寫入"

@@ -1177,7 +1177,10 @@ def update_application_statuses_batch(spreadsheet_id, job_name, candidates, new_
     recommend_date_col_letter = _col_letter("推薦日")
     row_by_appid = {row[0]: i for i, row in enumerate(existing[1:], start=2) if row}
 
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    # 這個檔案 import 的是 datetime 模組本身（不是 from datetime import datetime），
+    # datetime.now() 會炸成 AttributeError；用 datetime.date.today() 才對，
+    # 而且語意更準——這裡只需要日期，不需要時間。
+    today_str = datetime.date.today().strftime("%Y-%m-%d")
     # 只有「已推薦主管」才寫推薦主管/推薦日——這兩欄的語意是「推薦這一次」發生的
     # 事，其他階段轉換不該覆蓋它，否則之後算不出「從推薦到現在幾天」。
     _write_recommend = bool(recommended_to) and new_status == "已推薦主管"
