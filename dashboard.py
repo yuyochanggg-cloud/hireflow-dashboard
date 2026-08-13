@@ -403,6 +403,7 @@ def _get_sheet():
 # ── Stage / status mapping ────────────────────────────────────
 # FLOW_TO_STAGE / STAGE_TO_FLOW / _RESULT_MAP / _STATUS_MAP
 # 定義已搬移至 hr_schema.py（單一來源），此處保留同名別名避免動到下游程式碼
+import hr_schema  # 2026-08-13：看板卡片老化天數/首頁待催辦要用 hr_schema.workdays_since
 from hr_schema import (
     FLOW_TO_STAGE, STAGE_TO_FLOW,
     RESULT_MAP as _RESULT_MAP,
@@ -626,6 +627,13 @@ def fetch_all_candidates() -> list:
             # mark_hr_override_batch寫入）。分析報表用這個算「人工覆核率」，
             # 偏高代表AI評分prompt/維度可能需要檢視，不是對外揭露用途。
             "hr_override":     a.get("HR初篩狀態", "") == "人工覆核通過",
+            # 2026-08-13：首頁待催辦清單要用，跟 daily_health_check.py 判斷
+            # 同一件事（卡在哪個流程狀態、推薦給誰、哪天推薦的），這裡補進來
+            # 而不是另外重新查一次 Sheets——資料已經在手上，只是沒映射出來。
+            "flow_status":     a.get("流程狀態", ""),
+            "job_name":        a.get("職缺名稱", ""),
+            "recommended_to":  a.get("推薦主管", ""),
+            "recommended_at":  a.get("推薦日", ""),
         })
 
     # 候選人主檔裡有、但03_應徵主檔完全沒有對應列的人（極少見的邊界情況），
@@ -641,6 +649,7 @@ def fetch_all_candidates() -> list:
             "created_at": c.get("初次進庫日期", ""), "stability": "", "commute": "",
             "highlights": "", "gaps": "", "screening_notes": "", "note": "",
             "stage_updated_at": "", "prestage": "", "hr_override": False,
+            "flow_status": "", "job_name": "", "recommended_to": "", "recommended_at": "",
         })
     return result
 
@@ -1127,6 +1136,42 @@ def interview_gcal_link(job_title: str, name: str, start_dt: datetime, duration_
         location=INTERVIEW_ROOM,
     )
 
+def _pending_followups(all_cands, today=None):
+    """待催辦清單：卡在「已推薦主管」或「已傳邀約」超過門檻工作日的人。
+
+    2026-08-13 新增。跟 daily_health_check.py 的 build_followup_lines 做同一件事、
+    共用 hr_schema.FOLLOWUP_RULES 與 workdays_since，但資料來源不同——健檢讀的是
+    原始 Sheets rows（list of list），這裡讀的是 dashboard 已經載入、轉成 dict 的
+    all_cands。兩邊各自實作是因為資料形狀不同，但規則跟門檻共用同一份定義，
+    不會出現「信裡說卡5天、畫面上說卡3天」這種各算各的情況。
+
+    這份清單以前只活在每天早上的健檢信裡，使用者平常操作是開 dashboard、不是
+    回頭翻信——搬到首頁才會真的被每天看到、變成行動，信留著當備援。
+    """
+    today = today or date.today()
+    rows = []
+    for c in all_cands:
+        flow = c.get("flow_status", "")
+        rule = next((r for r in hr_schema.FOLLOWUP_RULES if r[0] == flow), None)
+        if not rule:
+            continue
+        _, who, threshold = rule
+        # 推薦日優先（語意最精準：推薦這件事發生在哪天），沒有才退回人才狀態更新日
+        basis = (c.get("recommended_at") if flow == "已推薦主管" and c.get("recommended_at")
+                 else c.get("stage_updated_at"))
+        days = hr_schema.workdays_since(basis, today) if basis else None
+        if days is None or days < threshold:
+            continue
+        target = c.get("recommended_to") if flow == "已推薦主管" else who
+        rows.append({
+            "days": days, "name": c.get("name") or "(無姓名)",
+            "job_name": c.get("job_name", ""), "flow": flow,
+            "target": target or who,
+        })
+    rows.sort(key=lambda r: -r["days"])
+    return rows
+
+
 # ══════════════════════════════════════════════════════════════
 # PAGE 1 — 本週 + 下週總覽
 # ══════════════════════════════════════════════════════════════
@@ -1147,6 +1192,20 @@ def page_overview():
     ivs_joined = _interviews_with_join(all_ivs, all_cands, all_jobs)
     # 這裡要跟06_員工主檔（到職資料，本來就是per-person）對應，用candidate_id
     cand_map   = {c["candidate_id"]: c for c in all_cands if c.get("candidate_id")}
+
+    # ── 待催辦：放在最上面，這是使用者每天真正會打開來看的頁面 ──────
+    # 2026-08-13 新增。原本這份清單只在每天早上的健檢信裡，現在同時顯示在這裡，
+    # 信留著當備援（萬一哪天沒開 dashboard）。HR推薦46→主管推進21，55%的流失
+    # 卡在主管端，是整條漏斗最大的單一斷點，這份清單就是為了讓「卡太久」被看到。
+    _followups = _pending_followups(all_cands, today)
+    if _followups:
+        st.warning(f"⏰ **待催辦 {len(_followups)} 筆**（超過 3 個工作日沒有進展）")
+        for f in _followups:
+            st.markdown(
+                f"　・**{f['name']}**｜{f['job_name']}｜卡在「{f['flow']}」"
+                f"**{f['days']} 個工作日**｜等 {f['target']}"
+            )
+        st.markdown("---")
 
     # ── 指標列 ────────────────────────────────────────────────
     # 原本有「在途候選人」（stage not in hired/rejected），但這個定義會把AI
@@ -1465,6 +1524,17 @@ div:has(> [class*="st-key-kb_header"]) {
         # 進入目前階段的日期（M/D），跟在等第徽章旁邊，一眼看出「卡多久了」
         stage_dt = parse_dt(c.get("stage_updated_at"))
         stage_date_txt = f"{stage_dt.month}/{stage_dt.day}" if stage_dt else ""
+        # 2026-08-13：光有日期要心算才知道卡多久，直接算成工作日數顯示。這是
+        # Opus 建議的「老化清單」在卡片上的最小實作——量體小時，比任何百分比
+        # 或趨勢圖都更有行動意義。用 hr_schema.workdays_since 跟健檢信/首頁
+        # 待催辦用同一套算法與門檻，三個地方不能出現三個互相矛盾的天數。
+        _stage_days = (hr_schema.workdays_since(c.get("stage_updated_at"), date.today())
+                       if c.get("stage_updated_at") else None)
+        _aging_txt, _aging_color = "", "#94a3b8"
+        if _stage_days is not None and sk not in ("hired", "rejected"):
+            _aging_txt = f"卡{_stage_days}個工作日" if _stage_days else "今天進入"
+            if _stage_days >= hr_schema.CARD_AGING_ALERT_DAYS:
+                _aging_color = "#dc2626"  # 超過門檻才用警示色，平時維持中性灰
         with st.container(border=True, key=f"kb_card_{bpfx}"):
             # 姓名+等第：字級拉到 --fs-sm（可讀），允許換行，不再用ellipsis
             # 硬裁字——裁字才是使用者真正在意的「看不到人在哪」的根源。
@@ -1481,13 +1551,18 @@ div:has(> [class*="st-key-kb_header"]) {
                 + (f'<span style="font-size:var(--fs-xs);color:#94a3b8;flex-shrink:0;" '
                    f'title="{STAGE_LABEL.get(sk, "")}進度更新於{stage_date_txt}">{stage_date_txt}</span>'
                    if stage_date_txt else '')
+                + (f'<span style="font-size:var(--fs-xs);color:{_aging_color};'
+                   f'font-weight:{"700" if _aging_color != "#94a3b8" else "400"};flex-shrink:0;" '
+                   f'title="進入「{STAGE_LABEL.get(sk, "")}」已經 {_stage_days} 個工作日">'
+                   f'{_aging_txt}</span>'
+                   if _aging_txt else '')
                 + '</div>',
                 unsafe_allow_html=True,
             )
 
             # 推進/結案/備註三顆動作並排一行，卡片只剩兩行（手繪稿版型）
             if sk == "hired":
-                bc1, bc2 = st.columns([2, 1])
+                bc1, bc2, bc3 = st.columns([2, 1, 1])
                 if bc1.button("→ 到職追蹤", key=f"{bpfx}_goto_onboard", use_container_width=True):
                     st.session_state['_pending_nav'] = "✅ 到職流程"
                     st.session_state['_onboard_focus_cid'] = cid
@@ -1496,8 +1571,12 @@ div:has(> [class*="st-key-kb_header"]) {
                     if st.button("備" + ("●" if note else ""), key=f"{bpfx}_note_toggle",
                                  help=note if note else "新增備註", use_container_width=True):
                         st.session_state[f"{bpfx}_note_open"] = not st.session_state.get(f"{bpfx}_note_open", False)
+                with bc3:
+                    if st.button("⇅", key=f"{bpfx}_jump_toggle", help="跳到其他階段",
+                                 use_container_width=True):
+                        st.session_state[f"jump_open_{cid}"] = not st.session_state.get(f"jump_open_{cid}", False)
             else:
-                bc1, bc2, bc3 = st.columns(3)
+                bc1, bc2, bc3, bc4 = st.columns(4)
                 _next_is_interview = bool(next_s) and next_s[0] == "interview_scheduled"
                 if next_s:
                     if bc1.button("→", key=f"{bpfx}_{next_s[0]}", use_container_width=True,
@@ -1524,6 +1603,52 @@ div:has(> [class*="st-key-kb_header"]) {
                 if bc3.button("備" + ("●" if note else ""), key=f"{bpfx}_note_toggle",
                               use_container_width=True, help=note if note else "新增備註"):
                     st.session_state[f"{bpfx}_note_open"] = not st.session_state.get(f"{bpfx}_note_open", False)
+                if bc4.button("⇅", key=f"{bpfx}_jump_toggle", help="跳到其他階段",
+                              use_container_width=True):
+                    st.session_state[f"jump_open_{cid}"] = not st.session_state.get(f"jump_open_{cid}", False)
+
+            # 「跳到其他階段」：2026-08-13 新增，解決「→」只能一步步往前推的
+            # 限制——這個月使用者已經兩次因為卡片推錯階段/在約定面試就誤結案，
+            # 得工程端寫腳本改 Sheets 才修回來。往後跳（退回）要求填原因寫進
+            # 備註；跳進「約定面試」沿用既有的 iv_open_{cid} 問日期流程；跳到
+            # 其他任何階段（包含直接跳「已面試」——門市店長自己約自己面完，
+            # 不走系統排的面試）不強制問日期，維持使用者已經拍板的決定：
+            # 「不用做預估日期標記，跟以前一樣就好」。
+            if st.session_state.get(f"jump_open_{cid}"):
+                _jump_options = [s for s in STAGE_KEYS if s not in ("rejected", sk)]
+                _jump_labels = {s: STAGE_LABEL.get(s, s) for s in _jump_options}
+                _jump_sel = st.selectbox(
+                    "跳到", _jump_options, format_func=lambda s: _jump_labels[s],
+                    key=f"{bpfx}_jump_target", label_visibility="collapsed",
+                )
+                _jump_target_i = STAGE_KEYS.index(_jump_sel) if _jump_sel in STAGE_KEYS else cur_i
+                _is_backward = _jump_target_i < cur_i
+                _jump_reason = ""
+                if _is_backward:
+                    _jump_reason = st.text_input(
+                        "退回原因（必填）", key=f"{bpfx}_jump_reason",
+                        placeholder="例如：按錯了、其實還沒面試",
+                    )
+                if st.button("確認跳轉", key=f"{bpfx}_jump_confirm", type="primary"):
+                    if _is_backward and not _jump_reason.strip():
+                        st.warning("退回階段要先填原因，才知道之後為什麼卡在這裡。")
+                    elif _jump_sel == "interview_scheduled":
+                        st.session_state[f"jump_open_{cid}"] = False
+                        st.session_state[f"iv_open_{cid}"] = True
+                        st.rerun()
+                    else:
+                        _ok = True
+                        if _is_backward:
+                            _stamp = date.today().strftime('%m/%d')
+                            _new_note = (f"{note}\n" if note else "") + (
+                                f"[退回 {STAGE_LABEL.get(sk, sk)}→{_jump_labels[_jump_sel]} "
+                                f"{_stamp}] 原因：{_jump_reason.strip()}"
+                            )
+                            _ok = update_note(cid, _new_note)
+                        if _ok and update_stage(cid, _jump_sel):
+                            st.session_state[f"jump_open_{cid}"] = False
+                            st.toast(f"✅ {name} → {_jump_labels[_jump_sel]}")
+                            st.rerun()
 
             if st.session_state.get(f"{bpfx}_note_open"):
                 new_note = st.text_area("備註", value=note, key=f"{bpfx}_note_ta", label_visibility="collapsed")

@@ -207,3 +207,43 @@ STATUS_MAP = {
     "招募中": "open", "暫停中": "paused", "已結束": "closed",
     "open": "open", "paused": "paused", "closed": "closed",
 }
+
+# ── 待催辦規則（來源：daily_health_check.py，2026-08-13 收斂到這裡）───────
+# 為什麼要收斂：health check 用這套規則寄每日信，dashboard 首頁跟看板卡片
+# 也要顯示同一件事（卡了幾天、算不算逾期）。若各自重寫一份「幾天算逾期」，
+# 遲早會像這系統一整年反覆踩到的坑一樣——兩條路徑各改一次，其中一條忘了跟，
+# 對外顯示的天數就對不起來，使用者會誤以為系統又壞了。
+#
+# HR推薦 46 → 主管推進 21，55% 的流失卡在主管端，是整條漏斗最大的單一斷點，
+# 這套規則就是為了讓「卡太久」變得看得到（見 2026-08-12 待催辦功能）。
+FOLLOWUP_RULES = [
+    # (流程狀態, 等誰, 幾個工作日算逾期)
+    ("已推薦主管", "用人主管", 3),
+    ("已傳邀約",   "候選人",   3),
+]
+
+# 看板卡片顯示「卡幾天」時，不分階段一律套用的通用提醒門檻（跟 FOLLOWUP_RULES
+# 的差別：FOLLOWUP_RULES 只管兩個特定階段、要寄進待催辦清單；這個門檻是卡片上
+# 泛用的「該注意了」視覺提示，涵蓋所有階段，不生成待催辦清單裡的那種明細行）。
+CARD_AGING_ALERT_DAYS = 3
+
+
+def workdays_since(date_str, today):
+    """date_str 到 today 之間的工作日數（不含起日、含today）；不可解析回 None。
+
+    刻意不處理國定假日——維護一份假日表的成本高於它帶來的精度，而這個數字的用途
+    是「該不該催」，差一兩天不影響判斷。
+    """
+    import datetime as _dt
+    try:
+        d = _dt.date.fromisoformat(str(date_str)[:10])
+    except Exception:
+        return None
+    if d > today:
+        return None
+    n, cur = 0, d
+    while cur < today:
+        cur += _dt.timedelta(days=1)
+        if cur.weekday() < 5:
+            n += 1
+    return n

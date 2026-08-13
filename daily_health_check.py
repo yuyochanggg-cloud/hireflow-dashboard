@@ -22,6 +22,7 @@ import gspread
 from google.auth import default as google_auth_default
 from google.auth import impersonated_credentials as _impersonated_credentials
 
+import hr_schema
 from hr_schema import S3_COLS, FLOW_TO_STAGE
 
 # 健檢警報收件人（使用者實際會看的信箱）。刻意寫死而非讀 email_config.json 的
@@ -446,31 +447,12 @@ def check_11_interview_ahead_of_stage(s3_values, s5_values):
 # 為什麼追這個：HR推薦 46 → 主管推進 21，**55% 的流失卡在主管端**，是整條漏斗最大
 # 的單一斷點，而在 2026-08-12 之前完全沒有測量基礎——「推薦日」849 筆裡只有 13 筆
 # 有值（全是手動填的），因為寄推薦信那條路徑從來沒寫過這一欄。
-FOLLOWUP_RULES = [
-    # (流程狀態, 等誰, 幾個工作日算逾期)
-    ('已推薦主管', '用人主管', 3),
-    ('已傳邀約',   '候選人',   3),
-]
-
-
-def _workdays_since(date_str, today):
-    """date_str 到 today 之間的工作日數（不含起日、含today）；不可解析回 None。
-
-    刻意不處理國定假日——維護一份假日表的成本高於它帶來的精度，而這個數字的用途
-    是「該不該催」，差一兩天不影響判斷。
-    """
-    try:
-        d = datetime.date.fromisoformat(str(date_str)[:10])
-    except Exception:
-        return None
-    if d > today:
-        return None
-    n, cur = 0, d
-    while cur < today:
-        cur += datetime.timedelta(days=1)
-        if cur.weekday() < 5:
-            n += 1
-    return n
+#
+# 2026-08-13：FOLLOWUP_RULES 與天數計算收斂到 hr_schema.py（dashboard 首頁與看板
+# 卡片也要顯示同一件事，兩處各寫一份規則遲早會對不起來）。這裡保留同名別名
+# _workdays_since，避免下面呼叫端要逐一改名。
+FOLLOWUP_RULES = hr_schema.FOLLOWUP_RULES
+_workdays_since = hr_schema.workdays_since
 
 
 def build_followup_lines(s3_values, today=None):
