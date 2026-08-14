@@ -607,3 +607,31 @@ def test_推薦寄信路徑實際執行不會拋例外():
     assert written_by_col_letter.get(_col_letter("推薦主管")) == "設計部 許媚喬"
     assert written_by_col_letter.get(_col_letter("推薦日")), "推薦日沒有被寫入"
     assert written_by_col_letter.get(_col_letter("人才狀態更新日")), "人才狀態更新日沒有被寫入"
+
+
+# ── 12. 職缺管理拿掉「新增職缺」（守 2026-08-14 兩套職缺資料不同步的坑）───
+
+def test_save_job不再自己生新job_id():
+    # 2026-08-14 實際發生：使用者在職缺管理新增「中壢長期晚班計時人員」，
+    # 動態篩選引擎（app.py）完全看不到——因為兩邊是完全獨立的資料來源，
+    # app.py 讀 jd_profiles.json（含必備/加分條件/評分維度，AI篩選的必要
+    # 內容），dashboard 這裡只收職缺名稱/部門/人數，就算存進 Sheets 也是個
+    # AI 用不了的空殼。而且舊版 save_job() 生成的 job_id 帶時間戳後綴
+    # （sanitize後名稱+"_"+MMDDHHmm），跟 app.py 生成的 job_id（純
+    # sanitize後名稱，無後綴）格式不一致——同一個職缺名稱之後若又在 app.py
+    # 建立，兩邊 job_id 對不上會產生重複職缺，跟 08-10 那次「外貿業務助理」
+    # 需要事後合併是同一種坑。改成沒有 id 就直接失敗，不會生新職缺。
+    ok = dashboard_module.save_job({"title": "測試職缺", "department": "測試部"})
+    assert ok is False, "沒帶 id 時 save_job 不該成功建立新職缺"
+
+
+def test_save_job更新既有職缺不會洗掉未提供的欄位():
+    # 舊版 row_data 無條件包含「職缺名稱」「工作地點」「建立日期」三個 key
+    # （即使呼叫端只想改狀態），_upsert_row 對「in data 的 key」照寫不誤，
+    # 代表點「關閉/重開」會把職缺名稱/工作地點洗成空字串、建立日期洗成今天
+    # ——這個 bug 從沒被抓到只是因為這兩顆按鈕幾乎沒被真的點過。
+    import inspect
+    src = inspect.getsource(dashboard_module.save_job)
+    assert '"建立日期"' not in src, "不該再無條件覆寫建立日期"
+    assert 'if data.get("title")' in src and 'if data.get("department")' in src, \
+        "只改狀態時，職缺名稱/工作地點不該被無條件寫入空字串"

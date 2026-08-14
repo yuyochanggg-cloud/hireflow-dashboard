@@ -1068,25 +1068,32 @@ def save_hire(data: dict) -> bool:
         return False
 
 def save_job(data: dict) -> bool:
+    """更新既有職缺的狀態（招募中/暫停中/已結束）。
+
+    2026-08-14：拿掉「新增職缺」功能，只保留更新既有職缺。原本的新增分支
+    （data 沒帶 id 時自己生一個 job_id）已經沒有任何呼叫端會用到，一併移除，
+    不留死程式碼——見 dashboard.py page_jobs() 的說明，新職缺一律從
+    app.py（動態篩選引擎）建立，不能在這裡憑空生。
+
+    data 必須帶 "id"（既有職缺的 job_id），否則直接失敗，不會生新職缺。
+    """
     sh = _get_sheet()
     if not sh:
         return False
+    jid = data.get("id", "")
+    if not jid:
+        st.error("職缺更新失敗：缺少 job_id（新職缺請到「動態篩選引擎」建立，不能在這裡新增）。")
+        return False
     try:
-        import re as _re, time as _time
+        import time as _time
         ws = sh.worksheet("01_職缺主檔")
         status_zh = {"open": "招募中", "paused": "暫停中", "closed": "已結束"}.get(
             data.get("status", "open"), "招募中")
-        jid = data.get("id", "")
-        if not jid:
-            title = data.get("title", "")
-            jid = _re.sub(r"[^\w\-]", "_", title)[:20] + "_" + _time.strftime("%m%d%H%M")
-        row_data = {
-            "job_id":   jid,
-            "職缺名稱": data.get("title", ""),
-            "工作地點": data.get("department", ""),
-            "狀態":     status_zh,
-            "建立日期": _time.strftime("%Y-%m-%d"),
-        }
+        row_data = {"job_id": jid, "狀態": status_zh}
+        if data.get("title"):
+            row_data["職缺名稱"] = data["title"]
+        if data.get("department"):
+            row_data["工作地點"] = data["department"]
         _upsert_row(ws, "job_id", row_data)
         _invalidate()
         return True
@@ -2999,6 +3006,23 @@ def page_analytics():
 # PAGE — 職缺管理
 # ══════════════════════════════════════════════════════════════
 def page_jobs():
+    # 2026-08-14：拿掉「新增職缺」表單。這裡跟「動態篩選引擎」(app.py) 是兩個
+    # 完全獨立的資料來源——app.py 建職缺時要填必備條件/加分條件/評分維度，
+    # 這些是 AI 篩選履歷的必要內容，不是隨便打個名字就好；這裡的表單只收
+    # 職缺名稱/部門/人數，就算存進 01_職缺主檔，動態篩選引擎也永遠讀不到、
+    # 用不了。實際發生過：使用者在這裡新增「中壢長期晚班計時人員」，發現
+    # 篩選引擎完全看不到，因為兩邊的職缺根本是兩份獨立資料。
+    #
+    # 而且這裡生成的 job_id 格式（sanitize後的名稱+時間戳後綴，見舊版
+    # save_job()）跟 app.py 生成的 job_id（單純 sanitize 後的名稱，無後綴）
+    # 不一致——如果之後又想用同一個職缺名稱在 app.py 建立並開始篩履歷，
+    # 兩邊 job_id 對不上會產生重複的職缺紀錄，跟 08-10 那次「外貿業務助理」
+    # 需要事後合併的狀況一樣。
+    #
+    # 正確流程：新職缺一律從 app.py 建立（同時決定篩選條件），它會自動同步
+    # 進 01_職缺主檔；這裡只保留對既有職缺的狀態管理（關閉/重開）。
+    st.caption("💡 新職缺請到「動態篩選引擎」(app.py) 建立——那裡會同時設定 "
+               "AI 篩選條件，並自動同步到這份主檔。這裡只能管理既有職缺的狀態。")
     jobs = fetch_all_jobs()
     if jobs:
         for j in jobs:
@@ -3024,23 +3048,7 @@ def page_jobs():
                         save_job({"id": j["id"], "status": "open"})
                         st.rerun()
     else:
-        st.info("尚無職缺，請新增。")
-
-    st.divider()
-    st.markdown("**新增職缺**")
-    with st.form("new_job_form"):
-        nj1, nj2, nj3 = st.columns([3, 2, 1])
-        new_title = nj1.text_input("職缺名稱 *", placeholder="門市銷售人員")
-        new_dept  = nj2.text_input("部門",       placeholder="零售事業部")
-        new_hc    = nj3.number_input("需求人數", value=1, min_value=1)
-        if st.form_submit_button("新增職缺", type="primary"):
-            if not new_title.strip():
-                st.error("職缺名稱不可為空。")
-            else:
-                if save_job({"title": new_title.strip(), "department": new_dept.strip(),
-                              "headcount": int(new_hc), "status": "open"}):
-                    st.success(f"✅ 已新增：{new_title.strip()}")
-                    st.rerun()
+        st.info("尚無職缺——請到「動態篩選引擎」建立第一個職缺。")
 
 # ══════════════════════════════════════════════════════════════
 # Setup Screen
