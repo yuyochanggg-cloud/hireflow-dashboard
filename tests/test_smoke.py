@@ -635,3 +635,73 @@ def test_save_job更新既有職缺不會洗掉未提供的欄位():
     assert '"建立日期"' not in src, "不該再無條件覆寫建立日期"
     assert 'if data.get("title")' in src and 'if data.get("department")' in src, \
         "只改狀態時，職缺名稱/工作地點不該被無條件寫入空字串"
+
+
+# ── 13. 健檢「即將報到」提醒（2026-08-14）────────────────────────────
+
+def test_即將報到只抓window內未實際報到者():
+    # 判準：預計報到日在未來 5 個工作日內 + 實際報到日還沒填。過去日期／
+    # window 外／已經真的報到了，都不該進提醒；用固定日期不受「今天是幾號」
+    # 影響——這種對日期敏感的功能一定要用純合成資料才不會隨時間過期。
+    import daily_health_check as hc
+    import datetime as _dt
+
+    today = _dt.date(2026, 8, 14)  # 週五
+    h6 = ['employee_id', 'candidate_id', 'job_id', '真實姓名', '職位', '部門',
+          '工作地點', '預計報到日', '實際報到日']
+
+    def mk6(cid, expected, actual=''):
+        r = [''] * len(h6)
+        r[h6.index('candidate_id')] = cid
+        r[h6.index('預計報到日')] = expected
+        r[h6.index('實際報到日')] = actual
+        return r
+
+    s2 = [
+        ['candidate_id', '真實姓名'],
+        ['C1', '待報到的甲'], ['C2', '已報到的乙'], ['C3', '太遠的丙'],
+        ['C4', '過去日期的丁'], ['C5', '今天報到的戊'],
+    ]
+    s6 = [h6,
+        mk6('C1', '2026-08-19'),                    # 3工作日後 → 應該提醒
+        mk6('C2', '2026-08-19', '2026-08-19'),      # 已實際報到 → 不提醒
+        mk6('C3', '2026-09-15'),                    # 超過window → 不提醒
+        mk6('C4', '2026-08-01'),                    # 過去日期 → 不提醒
+        mk6('C5', '2026-08-14'),                    # 今天報到 → 應該提醒
+    ]
+    lines, n = hc.build_upcoming_onboard_lines(s6, s2, today)
+    assert n == 2, f"應該只有 C1 跟 C5 兩筆，實際 {n}: {lines}"
+    joined = '\n'.join(lines)
+    assert '待報到的甲' in joined and '今天報到的戊' in joined
+    assert '已報到的乙' not in joined, "已經真的報到的人不該再提醒"
+    assert '太遠的丙' not in joined, "超過 window 的不該提醒"
+    assert '過去日期的丁' not in joined, "過去日期不算「即將」"
+    assert '今天報到' in joined, "days_until=0 要顯示成「今天報到」，不是「還剩 0 個工作日」"
+
+
+def test_即將報到姓名從02候選人主檔補():
+    # 06_員工主檔的「真實姓名」實測都空著，姓名要靠 candidate_id join 02 主檔。
+    # 沒有這條補救的話，健檢信會列出一堆「(無姓名)」，等於沒法辨識是誰。
+    import daily_health_check as hc
+    import datetime as _dt
+    today = _dt.date(2026, 8, 14)
+    h6 = ['employee_id', 'candidate_id', 'job_id', '真實姓名', '職位', '部門',
+          '工作地點', '預計報到日', '實際報到日']
+    r = [''] * len(h6)
+    r[h6.index('candidate_id')] = 'CAND-X'
+    r[h6.index('預計報到日')] = '2026-08-19'
+    # 真實姓名欄刻意留空——這是 06 主檔的真實狀態
+    s6 = [h6, r]
+    s2 = [['candidate_id', '真實姓名'], ['CAND-X', '侯政宇']]
+    lines, n = hc.build_upcoming_onboard_lines(s6, s2, today)
+    assert n == 1 and '侯政宇' in lines[0], f"沒從 02 補姓名：{lines}"
+    # 沒帶 s2 時要優雅退化成 (無姓名)，不能炸
+    lines, n = hc.build_upcoming_onboard_lines(s6, None, today)
+    assert n == 1 and '(無姓名)' in lines[0]
+
+
+def test_健檢主旨會同時帶待催辦和即將報到():
+    import inspect
+    src = inspect.getsource(daily_health_check.send_report_email)
+    assert 'upcoming_n' in src, '主旨要能反映「即將報到」，讓需要行動的日子在視覺上跳出來'
+    assert '即將報到' in src

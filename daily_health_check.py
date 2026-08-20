@@ -503,10 +503,104 @@ def format_followup(s3_values, today=None):
     return out, n
 
 
-def format_report(issues, known, total_rows, followup_lines=None):
+# ── 即將報到提醒 ─────────────────────────────────────────────────────────
+# 2026-08-14 新增。使用者需求：「已通知」階段的人設定了預計報到日之後，招募看板
+# 就只是被動等時間到——但報到前 3-5 個工作日應該主動提醒 HR，去確認到職前的
+# 檢查清單（銀行帳號/報到Form/MIS單/門禁卡...）是否備妥。這變成健檢信除了
+# 「監控資料健康度」跟「待催辦」之外的第三個角色：主動提醒即將到來的事件。
+#
+# 判準：預計報到日在未來 UPCOMING_ONBOARD_WINDOW_DAYS 個工作日內（含當天），
+# 且「實際報到日」還沒填（＝還沒真的來上班）。過去日期的預計報到不算在內
+# ——那是舊資料或臨時取消，不是「即將」的意思。
+UPCOMING_ONBOARD_WINDOW_DAYS = 5
+
+
+def _name_map(s2_values):
+    """從 02_候選人主檔 建 candidate_id → 真實姓名 的查表。06_員工主檔的
+    「真實姓名」欄實測都空著（可能是 app.py 建立到職紀錄時沒帶入姓名），
+    要補姓名只能靠 candidate_id join 02 主檔。"""
+    if not s2_values:
+        return {}
+    h = s2_values[0]
+    if 'candidate_id' not in h or '真實姓名' not in h:
+        return {}
+    i_cid, i_name = h.index('candidate_id'), h.index('真實姓名')
+    m = {}
+    for row in s2_values[1:]:
+        cid = (row[i_cid] if len(row) > i_cid else '').strip()
+        name = (row[i_name] if len(row) > i_name else '').strip()
+        if cid and name:
+            m[cid] = name
+    return m
+
+
+def build_upcoming_onboard_lines(s6_values, s2_values=None, today=None):
+    """回傳 (提醒明細行, 提醒筆數)。
+
+    06_員工主檔本身是 per-person，但姓名欄實測都空著；姓名要從 02_候選人主檔
+    用 candidate_id 補進來，才不會列出一堆「(無姓名)」。
+    """
+    today = today or datetime.date.today()
+    h = s6_values[0] if s6_values else []
+    if '預計報到日' not in h:
+        return [], 0
+    i_start = h.index('預計報到日')
+    i_actual = h.index('實際報到日') if '實際報到日' in h else None
+    i_name = h.index('真實姓名') if '真實姓名' in h else -1
+    i_job = h.index('職位') if '職位' in h else -1
+    i_cid = h.index('candidate_id') if 'candidate_id' in h else -1
+    name_by_cid = _name_map(s2_values) if s2_values else {}
+
+    rows = []
+    for row in s6_values[1:]:
+        start_str = (row[i_start] if len(row) > i_start else '').strip()
+        actual_str = ((row[i_actual] if i_actual is not None and len(row) > i_actual else '') or '').strip()
+        if not start_str or actual_str:
+            continue  # 沒設預計報到日、或已經真的報到了，都不用提醒
+        try:
+            start_dt = datetime.date.fromisoformat(start_str[:10])
+        except Exception:
+            continue
+        # 計算「今天到報到日」的工作日距離：0 = 今天要報到；>0 = 未來 N 個工作日後；
+        # None = 報到日在過去（用同一支 workdays_since：第二個參數要 >= 第一個才會回值）
+        days_until = hr_schema.workdays_since(today.isoformat(), start_dt)
+        if days_until is None:
+            continue  # 過去的日期不算「即將」
+        if days_until > UPCOMING_ONBOARD_WINDOW_DAYS:
+            continue
+        # 姓名優先用 06 直接寫的（少見），沒有才靠 candidate_id 從 02 補
+        name = (row[i_name] if i_name >= 0 and len(row) > i_name else '').strip()
+        if not name and i_cid >= 0 and len(row) > i_cid:
+            name = name_by_cid.get(row[i_cid].strip(), '')
+        name = name or '(無姓名)'
+        job = (row[i_job] if i_job >= 0 and len(row) > i_job else '') or ''
+        job_txt = f"｜{job}" if job else ''
+        when = "今天報到" if days_until == 0 else f"還剩 {days_until} 個工作日"
+        rows.append((days_until, f"{name}{job_txt}｜預計 {start_str} ({when})"))
+    rows.sort(key=lambda x: x[0])
+    return [line for _, line in rows], len(rows)
+
+
+def format_upcoming_onboard(s6_values, s2_values=None, today=None):
+    lines, n = build_upcoming_onboard_lines(s6_values, s2_values, today)
     out = []
+    if lines:
+        out.append(f"📅 即將報到 —— {n} 筆（未來 {UPCOMING_ONBOARD_WINDOW_DAYS} 個工作日內）")
+        for line in lines:
+            out.append(f"   {line}")
+        out.append("   → 建議：確認到職前檢查清單（銀行帳號/報到Form/MIS單/Workspace/門禁卡…）"
+                   "是否備妥；未備妥的項目在到職流程頁勾選追蹤。")
+        out.append("")
+    return out, n
+
+
+def format_report(issues, known, total_rows, followup_lines=None, upcoming_lines=None):
+    out = []
+    if upcoming_lines:
+        out.extend(upcoming_lines)
     if followup_lines:
         out.extend(followup_lines)
+    if (upcoming_lines or followup_lines):
         out.append("── 資料健檢 ──────────────────────────────────────")
     if issues:
         for issue in issues:
@@ -540,6 +634,12 @@ def run_checks():
     s1_values = sh.worksheet('01_職缺主檔').get_all_values()
     s5_values = sh.worksheet('05_面試主檔').get_all_values()
     s2_values = sh.worksheet('02_候選人主檔').get_all_values()
+    # 2026-08-14：06_員工主檔給「即將報到」提醒用（不是給檢查項用）。表可能
+    # 不存在或空的（新專案還沒有人報到），失敗要能繼續跑健檢，不能因此整個掛掉。
+    try:
+        s6_values = sh.worksheet('06_員工主檔').get_all_values()
+    except Exception:
+        s6_values = []
     total_rows = max(0, len(s3_values) - 1)
 
     checks = [
@@ -566,7 +666,7 @@ def run_checks():
         if new_lines:
             c.lines = new_lines
             issues.append(c)
-    return issues, known, total_rows, s3_values
+    return issues, known, total_rows, s3_values, s6_values, s2_values
 
 
 def load_email_config():
@@ -579,7 +679,7 @@ def load_email_config():
     return {}
 
 
-def send_report_email(report, has_issues, followup_n=0):
+def send_report_email(report, has_issues, followup_n=0, upcoming_n=0):
     """寄健檢報告到 ADMIN_EMAIL。
 
     2026-08-10 改成「每個工作日都寄」（原本只在有問題時寄）。改的原因：使用者連續
@@ -606,9 +706,16 @@ def send_report_email(report, has_issues, followup_n=0):
     _today = time.strftime('%m/%d')
     _state = (f"⚠️ HireFlow 健檢發現問題（{_today}）" if has_issues
               else f"✅ HireFlow 健檢正常（{_today}）")
-    # 待催辦數放進主旨：Opus 2026-08-12 的建議——每天都寄綠燈信有習慣化風險，
-    # 主旨要能 0.5 秒掃完並讓需要行動的日子在視覺上跳出來。
-    subject = f"{_state}｜待催辦 {followup_n}" if followup_n else _state
+    # 待催辦數／即將報到數放進主旨：Opus 2026-08-12 的建議——每天都寄綠燈信有
+    # 習慣化風險，主旨要能 0.5 秒掃完並讓需要行動的日子在視覺上跳出來。
+    # 兩個訊號並列時，日期敏感的「即將報到」放在後面，因為它是要不要今天就去
+    # 準備的判斷；「待催辦」是慢性積壓、幾天內處理都行。
+    _extras = []
+    if followup_n:
+        _extras.append(f"待催辦 {followup_n}")
+    if upcoming_n:
+        _extras.append(f"即將報到 {upcoming_n}")
+    subject = f"{_state}｜{'｜'.join(_extras)}" if _extras else _state
 
     # 2026-08-13 實測：Apps Script 是先真正執行 doPost（信已經寄出去了）才把
     # 執行結果回傳給呼叫端；「取得確認回應」這一步偶爾會斷線/逾時/回傳非預期
@@ -661,9 +768,10 @@ def main():
     ap.add_argument('--email', action='store_true', help='有問題時寄報告給自己')
     args = ap.parse_args()
 
-    issues, known, total_rows, s3_values = run_checks()
+    issues, known, total_rows, s3_values, s6_values, s2_values = run_checks()
     followup_lines, followup_n = format_followup(s3_values)
-    report = format_report(issues, known, total_rows, followup_lines)
+    upcoming_lines, upcoming_n = format_upcoming_onboard(s6_values, s2_values)
+    report = format_report(issues, known, total_rows, followup_lines, upcoming_lines)
     # 上面已經把 stdout 轉成 utf-8，理論上不會再炸；這層是保險——「印不出來」是
     # 顯示問題，絕不該讓它擋掉真正重要的通知（這正是 08-07 事故的形狀）。
     try:
@@ -675,7 +783,7 @@ def main():
     # 沒問題還是健檢自己壞了。改成天天寄、用主旨列區分 ✅/⚠️，這樣「該來的信沒來」
     # 本身就是一個明確的故障訊號。
     if args.email:
-        send_report_email(report, bool(issues), followup_n)
+        send_report_email(report, bool(issues), followup_n, upcoming_n)
 
 
 if __name__ == '__main__':

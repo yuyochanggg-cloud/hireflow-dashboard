@@ -1426,9 +1426,23 @@ def page_kanban():
 
     all_cands = fetch_all_candidates()
     all_jobs  = fetch_all_jobs()
+    all_hires_kb = fetch_all_hires()
+    all_ivs_kb   = fetch_all_interviews()
     # 已通知(hired)且已經標記「實際報到」的人，代表招募任務已完成，不該再
     # 佔招募看板的版面——到職追蹤頁那邊仍然看得到，只是從這裡消失。
-    _reported_cids = {h.get("candidate_id") for h in fetch_all_hires() if h.get("actual_start_date")}
+    _reported_cids = {h.get("candidate_id") for h in all_hires_kb if h.get("actual_start_date")}
+    # 2026-08-14：面試/報到日期 join 給卡片顯示用。「約定面試」跟「已通知」
+    # 這兩個階段本來就會等一段時間才輪到（面試通常一到三週後、報到通常兩週
+    # 到一個月後），只顯示「卡N個工作日」會誤導成流程卡住——顯示排定日期
+    # 才知道「還在等該等的時間」還是「該催了」。
+    #   面試：優先用 application_id 對應（唯一），退回 candidate_id（舊資料相容）
+    #   報到：06_員工主檔天生是 per-person，用 candidate_id
+    _iv_by_appid = {iv.get("application_id"): iv for iv in all_ivs_kb
+                    if iv.get("application_id")}
+    _iv_by_cid = {iv.get("candidate_id"): iv for iv in all_ivs_kb
+                  if iv.get("candidate_id") and not iv.get("application_id")}
+    _hire_by_cid = {h.get("candidate_id"): h for h in all_hires_kb
+                    if h.get("candidate_id")}
 
     show_rejected = _col_rej.checkbox("包含已結案候選人", value=False, key="kb_rejected")
 
@@ -1544,6 +1558,38 @@ div:has(> [class*="st-key-kb_header"]) {
             _aging_txt = f"卡{_stage_days}個工作日" if _stage_days else "今天進入"
             if _stage_days >= hr_schema.CARD_AGING_ALERT_DAYS:
                 _aging_color = "#dc2626"  # 超過門檻才用警示色，平時維持中性灰
+
+        # 2026-08-14：約定面試/已通知階段顯示排定日期，取代單純的「卡N個工作日」。
+        # 理由：這兩個階段的等待是預期的（面試可能約在兩三週後、報到通常在兩到
+        # 四週後），只顯示「卡N個工作日」會被誤讀成流程卡住，而其實是還在等
+        # 該等的時間。有排定日期時：改成顯示「面試 M/D」或「報到 M/D」，並用
+        # 「還剩N個工作日」取代「卡N個工作日」——同時把老化警示色關掉，因為
+        # 「還剩幾天到那個排定日」跟「卡多久沒動」是完全不同的語意。
+        _sched_dt = None
+        _sched_label = ""
+        if sk == "interview_scheduled":
+            _iv = _iv_by_appid.get(cid) or _iv_by_cid.get(c.get("candidate_id"))
+            if _iv:
+                _sched_dt = parse_dt(_iv.get("scheduled_at"))
+                _sched_label = "面試"
+        elif sk == "hired":
+            _h = _hire_by_cid.get(c.get("candidate_id"))
+            if _h:
+                _sched_dt = parse_dt(_h.get("start_date"))
+                _sched_label = "報到"
+        if _sched_dt:
+            _sched_date = _sched_dt.date()
+            _days_until = hr_schema.workdays_since(date.today(), _sched_date)
+            _sched_txt = f"{_sched_label} {_sched_dt.month}/{_sched_dt.day}"
+            if _days_until is None:
+                # 排定日期是過去 → 這才是真的該處理了，維持警示色
+                _sched_txt += "（已過）"
+                _aging_txt, _aging_color = _sched_txt, "#dc2626"
+            elif _days_until == 0:
+                _aging_txt, _aging_color = f"{_sched_txt}（今天）", "#dc2626"
+            else:
+                _aging_txt = f"{_sched_txt}（剩{_days_until}個工作日）"
+                _aging_color = "#94a3b8"  # 還在等該等的時間，不算卡住，不上警示色
         with st.container(border=True, key=f"kb_card_{bpfx}"):
             # 姓名+等第：字級拉到 --fs-sm（可讀），允許換行，不再用ellipsis
             # 硬裁字——裁字才是使用者真正在意的「看不到人在哪」的根源。
